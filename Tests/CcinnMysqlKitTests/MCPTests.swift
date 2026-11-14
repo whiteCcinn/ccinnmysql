@@ -227,3 +227,108 @@ struct MCPProfileTests {
         #expect(encoded.serialized().utf8.count <= 64 * 1024 + 512)
     }
 }
+
+// MARK: - MySQL tool provider
+
+/// Counts connection attempts; every open fails, so a test proves which calls never contact a server.
+private final class OpenCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func increment() { lock.withLock { count += 1 } }
+    var value: Int { lock.withLock { count } }
+}
+
+@Suite("MySQL MCP tools")
+struct MySQLMCPToolTests {
+    private static let readOnly = ConnectionProfile(name: "Prod", host: "prod", mcpAccess: .readOnly)
+    private static let readWrite = ConnectionProfile(name: "Dev", host: "dev", mcpAccess: .readWrite)
+
+    private func provider(_ profiles: [ConnectionProfile], forceReadOnly: Bool = false, opens: OpenCounter = OpenCounter(),
+                          audit: MCPAuditLog? = nil) -> MySQLMCPTools {
+        let registry = MCPClientRegistry { _ in
+            opens.increment()
+            throw MySQLError(.network, "no server in unit tests")
+        }
+        return MySQLMCPTools(resolver: MCPProfileResolver(profiles: profiles, defaultProfile: nil, forceReadOnly: forceReadOnly),
+                             registry: registry, audit: audit)
+    }
+
+    @Test func toolSchemasAreStrictAndAnnotated() async {
+        let tools = await provider([Self.readOnly]).tools()
+        let names = tools.map(\.name)
+        #expect(names.contains("run_query") && names.contains("get_innodb_status") && names.contains("explain_query"))
+        #expect(!names.contains("execute_statement"))
+        for tool in tools {
+            #expect(tool.inputSchema["type"] == "object", "\(tool.name)")
+            #expect(tool.inputSchema["additionalProperties"] == .bool(false), "\(tool.name)")
+            #expect(tool.readOnly && !tool.destructive, "\(tool.name)")
+        }
+        let writable = await provider([Self.readWrite]).tools()
+        let execute = writable.first { $0.name == "execute_statement" }
+        #expect(execute?.destructive == true && execute?.readOnly == false)
+        #expect(await !provider([Self.readWrite], forceReadOnly: true).tools().contains { $0.name == "execute_statement" })
+    }
+
+    @Test func rejectedStatementsNeverOpenAConnection() async {
+        let opens = OpenCounter()
+        let tools = provider([Self.readOnly], opens: opens)
+        for sql in ["DELETE FROM shop.orders", "SELECT * FROM t FOR UPDATE", "SELECT 1; SELECT 2", "/*!50000 DROP TABLE t */"] {
+            let result = await tools.call(name: "run_query", arguments: ["sql": .string(sql)])
+            #expect(result.isError, "\(sql)")
+        }
+        let explain = await tools.call(name: "explain_query", arguments: ["sql": "DELETE FROM t"])
+        #expect(explain.isError)
+        let write = await tools.call(name: "execute_statement", arguments: ["sql": "DELETE FROM t"])
+        #expect(write.isError, "execute_statement does not exist for read-only profiles")
+        #expect(opens.value == 0)
+    }
+
+    @Test func unknownToolsAndArgumentsAreErrorResults() async {
+        let tools = provider([Self.readOnly])
+        let unknownTool = await tools.call(name: "drop_everything", arguments: [:])
+        #expect(unknownTool.isError)
+        let unknownArgument = await tools.call(name: "list_databases", arguments: ["catalog": "x"])
+        #expect(unknownArgument.isError)
+        #expect(unknownArgument.payload.stringValue?.contains("catalog") == true)
+        let missing = await tools.call(name: "describe_table", arguments: ["database": "shop"])
+        #expect(missing.isError)
+    }
+
+    @Test func connectionFailuresAreReportedAsResults() async {
+        let opens = OpenCounter()
+        let result = await provider([Self.readOnly], opens: opens).call(name: "run_query", arguments: ["sql": "SELECT 1"])
+        #expect(result.isError)
+        #expect(result.payload.stringValue?.contains("no server") == true)
+        #expect(opens.value == 1)
+    }
+
+    @Test func listConnectionsNeverContainsSecrets() async {
+        let result = await provider([Self.readOnly, ConnectionProfile(name: "Hidden", host: "h")]).call(name: "list_connections", arguments: [:])
+        let text = result.payload.serialized()
+        #expect(text.contains("Prod"))
+        #expect(!text.contains("Hidden"), "disabled profiles are not listed")
+        #expect(!text.lowercased().contains("password"))
+    }
+
+    @Test func auditLogRedactsAndIsPrivate() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ccinnmysql-audit-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let audit = MCPAuditLog(directory: directory)
+        let tools = provider([Self.readWrite], audit: audit)
+        _ = await tools.call(name: "execute_statement", arguments: ["sql": "ALTER USER x IDENTIFIED BY 'pw-secret'"])
+        let text = try String(contentsOf: audit.fileURL, encoding: .utf8)
+        #expect(text.contains("IDENTIFIED BY '***'"))
+        #expect(!text.contains("pw-secret"))
+        let permissions = try FileManager.default.attributesOfItem(atPath: audit.fileURL.path)[.posixPermissions] as? NSNumber
+        #expect(permissions?.intValue == 0o600)
+    }
+
+    @Test func planEncodingIsBounded() throws {
+        var root = PlanNode(id: 0, title: "root")
+        root.children = (1...2_000).map { PlanNode(id: $0, title: "child \($0)") }
+        let plan = ExplainPlan(root: root, format: .tree, totalCost: nil, isAnalyzed: false)
+        let encoded = MySQLMCPTools.encode(plan: plan)
+        #expect((encoded["inputs"]?.arrayValue?.count ?? 0) < 500)
+        #expect(encoded["truncated"] == .bool(true))
+    }
+}
