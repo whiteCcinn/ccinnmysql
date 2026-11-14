@@ -375,17 +375,13 @@ struct AppLogo: View {
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: size * 0.23, style: .continuous)
-                .fill(LinearGradient(colors: [Color(red: 0.42, green: 0.36, blue: 0.96), Color(red: 0.16, green: 0.12, blue: 0.52)],
+                .fill(LinearGradient(colors: [Color(red: 0.23, green: 0.79, blue: 0.86), Color(red: 0.04, green: 0.45, blue: 0.52),
+                                              Color(red: 0.02, green: 0.20, blue: 0.26)],
                                      startPoint: .topLeading, endPoint: .bottomTrailing))
-            Image(systemName: "sparkle")
+            Image(systemName: "cylinder.split.1x2.fill")
                 .font(.system(size: size * 0.46, weight: .semibold))
                 .foregroundStyle(.white.gradient)
-                .offset(y: -size * 0.06)
                 .shadow(color: .black.opacity(0.25), radius: size * 0.04, y: size * 0.02)
-            Capsule()
-                .fill(.white.opacity(0.85))
-                .frame(width: size * 0.5, height: size * 0.07)
-                .offset(y: size * 0.27)
         }
         .frame(width: size, height: size)
         .shadow(color: .black.opacity(0.15), radius: size * 0.08, y: size * 0.04)
