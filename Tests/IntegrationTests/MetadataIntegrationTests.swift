@@ -119,7 +119,7 @@ struct MetadataIntegrationTests {
             #expect(digests.allSatisfy { $0.totalSeconds >= 0 && $0.totalSeconds.isFinite })
         }
         let replication = try await client.replicationOverview()
-        #expect(replication.role == .standalone || replication.role == .source)
+        #expect([.standalone, .source, .galeraNode].contains(replication.role))
         let variables = try await client.variables()
         #expect(variables.contains { $0.name == "max_connections" })
         let status = try await client.status()

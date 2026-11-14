@@ -49,7 +49,7 @@ for target in "$@"; do
     m80) run m80 13380 "$REGISTRY/mysql:8.0" MYSQL_ROOT_PASSWORD=$PASSWORD -- $SMALL_MYSQL ;;
     m84) run m84 13384 "$REGISTRY/mysql:8.4" MYSQL_ROOT_PASSWORD=$PASSWORD -- $SMALL_MYSQL --mysql-native-password=ON \
            --server-id=1 --gtid-mode=ON --enforce-gtid-consistency=ON ;;
-    r84) run r84 13386 "$REGISTRY/mysql:8.4" MYSQL_ROOT_PASSWORD=$PASSWORD -- $SMALL_MYSQL --server-id=2 \
+    r84) run r84 13386 "$REGISTRY/mysql:8.4" MYSQL_ROOT_PASSWORD=$PASSWORD -- $SMALL_MYSQL --server-id=2 --mysql-native-password=ON \
            --gtid-mode=ON --enforce-gtid-consistency=ON --read-only=ON ;;
     gr84) run gr84 13387 "$REGISTRY/mysql:8.4" MYSQL_ROOT_PASSWORD=$PASSWORD -- $SMALL_MYSQL --server-id=3 \
            --gtid-mode=ON --enforce-gtid-consistency=ON --plugin-load-add=group_replication.so \

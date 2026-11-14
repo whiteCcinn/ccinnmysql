@@ -74,7 +74,7 @@ struct MCPIntegrationTests {
 
         // Cancelling a long query must stop it on the server and produce no response for that id.
         try process.send(["jsonrpc": "2.0", "id": 14, "method": "tools/call",
-                          "params": ["name": "run_query", "arguments": ["sql": "SELECT COUNT(*) AS ccinn_cancel_me FROM shop.orders a, shop.orders b, shop.orders c WHERE a.amount + b.amount + c.amount > a.id",
+                          "params": ["name": "run_query", "arguments": ["sql": "SELECT COUNT(*) AS ccinn_cancel_me FROM shop.digits a, shop.digits b, shop.digits c, shop.digits d, shop.digits e, shop.digits f, shop.digits g, shop.digits h, shop.digits i WHERE a.d + b.d + c.d + d.d + e.d + f.d + g.d + h.d + i.d > 200",
                                                                          "timeout_seconds": 60]]])
         try await Task.sleep(for: .milliseconds(1_200))
         try process.send(["jsonrpc": "2.0", "method": "notifications/cancelled", "params": ["requestId": 14]])
@@ -113,11 +113,11 @@ final class MCPProcess: @unchecked Sendable {
     private var buffer = Data()
     private var messages: [JSONValue] = []
 
-    init(target: IntegrationEnvironment.Target, access: MCPAccess = .readOnly) throws {
+    init(target: IntegrationEnvironment.Target, access: MCPAccess = .readOnly, database: String? = "shop") throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("ccinnmysql-mcp-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let profile = ConnectionProfile(name: "IT \(target.label)", host: target.endpoint.host, port: target.endpoint.port, username: "root",
-                                        defaultDatabase: "shop", connectTimeout: 30, mcpAccess: access)
+                                        defaultDatabase: database, connectTimeout: 30, mcpAccess: access)
         try ProfileRepository(directory: directory, secrets: InMemorySecretStore()).save([profile])
         let secrets = directory.appendingPathComponent("secrets.json")
         let json = "{\"\(profile.id.uuidString)\": {\"password\": \"\(IntegrationEnvironment.rootPassword)\"}}"

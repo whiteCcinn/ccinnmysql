@@ -91,7 +91,7 @@ struct TopologyIntegrationTests {
         let session = client.openSession(database: "shop")
         let started = ContinuousClock.now
         let running = Task {
-            try await session.run("SELECT COUNT(*) AS ccinn_proxy_cancel FROM orders a, orders b, orders c WHERE a.amount + b.amount + c.amount > a.id")
+            try await session.run("SELECT COUNT(*) AS ccinn_proxy_cancel FROM shop.digits a, shop.digits b, shop.digits c, shop.digits d, shop.digits e, shop.digits f, shop.digits g, shop.digits h, shop.digits i WHERE a.d + b.d + c.d + d.d + e.d + f.d + g.d + h.d + i.d > 200")
         }
         try await Task.sleep(for: .milliseconds(800))
         let target = try #require(await session.runningTarget)
