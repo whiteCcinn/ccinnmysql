@@ -8,6 +8,7 @@ import Security
 final class StreamTaskTransport: ByteTransport, @unchecked Sendable {
     // URLSessionStreamTask is thread-safe; mutable state lives behind `state`.
     private let task: URLSessionStreamTask
+    private let session: URLSession
     private let endpoint: Endpoint
     private let delegate: TrustDelegate
     private let state = OSAllocatedUnfairLock(initialState: State())
@@ -19,20 +20,19 @@ final class StreamTaskTransport: ByteTransport, @unchecked Sendable {
         var closed = false
     }
 
-    /// One shared session per TLS-protocol floor; each task carries its own delegate (trust policy).
-    private static let modernSession: URLSession = makeSession(legacy: false)
-    private static let legacySession: URLSession = makeSession(legacy: true)
-
-    private static func makeSession(legacy: Bool) -> URLSession {
+    /// One session per connection: TLS sessions must never be resumed across connections with different
+    /// trust policies (a resumed session skips certificate evaluation).
+    private static func makeSession(legacy: Bool, delegate: TrustDelegate) -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.tlsMinimumSupportedProtocolVersion = legacy ? (tls_protocol_version_t(rawValue: 0x0301) ?? .TLSv12) : .TLSv12
         configuration.waitsForConnectivity = false
         configuration.timeoutIntervalForResource = 365 * 86_400
-        return URLSession(configuration: configuration)
+        return URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
     }
 
-    private init(task: URLSessionStreamTask, endpoint: Endpoint, delegate: TrustDelegate) {
+    private init(task: URLSessionStreamTask, session: URLSession, endpoint: Endpoint, delegate: TrustDelegate) {
         self.task = task
+        self.session = session
         self.endpoint = endpoint
         self.delegate = delegate
     }
@@ -43,11 +43,10 @@ final class StreamTaskTransport: ByteTransport, @unchecked Sendable {
         guard (1...65_535).contains(endpoint.port) else { throw MySQLError(.invalidArgument, "Invalid port \(endpoint.port)") }
         let host = endpoint.host.trimmingCharacters(in: .whitespaces)
         guard !host.isEmpty else { throw MySQLError(.invalidArgument, "Enter a host name") }
-        let session = legacyTLS ? legacySession : modernSession
-        let task = session.streamTask(withHostName: host, port: endpoint.port)
         let delegate = TrustDelegate()
-        task.delegate = delegate
-        let transport = StreamTaskTransport(task: task, endpoint: endpoint, delegate: delegate)
+        let session = makeSession(legacy: legacyTLS, delegate: delegate)
+        let task = session.streamTask(withHostName: host, port: endpoint.port)
+        let transport = StreamTaskTransport(task: task, session: session, endpoint: endpoint, delegate: delegate)
         task.resume()
         return transport
     }
@@ -97,11 +96,16 @@ final class StreamTaskTransport: ByteTransport, @unchecked Sendable {
             defer { state.closed = true }
             return !state.closed
         }
-        if first { task.cancel() }
+        if first {
+            task.cancel()
+            // Releases the session's strong reference to its delegate.
+            session.invalidateAndCancel()
+        }
     }
 
     deinit {
         task.cancel()
+        session.invalidateAndCancel()
     }
 
     private func describe(_ error: any Error, receiving: Bool) -> MySQLError {

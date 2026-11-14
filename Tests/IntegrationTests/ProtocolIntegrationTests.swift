@@ -46,6 +46,8 @@ struct ProtocolIntegrationTests {
             verifyIdentity.tls.mode = .verifyIdentity
             await #expect { _ = try await MySQLConnection.connect(verifyIdentity) } throws: { ($0 as? MySQLError)?.kind == .tls }
         }
+        // Regression: a TLS session established under a weaker policy must never be resumed to skip verification.
+        _ = try await MySQLConnection.connect(IntegrationEnvironment.rootConfiguration(target, tls: .required))
         // System roots do not trust a self-signed CA.
         await #expect { _ = try await MySQLConnection.connect(IntegrationEnvironment.rootConfiguration(target, tls: .verifyCA)) } throws: {
             ($0 as? MySQLError)?.kind == .tls
@@ -109,7 +111,7 @@ struct ProtocolIntegrationTests {
             .rows.compactMap { $0.first ?? nil })
         var configuration = IntegrationEnvironment.rootConfiguration(target, tls: .disabled)
         if plugins.contains("mysql_native_password") {
-            _ = try await admin.execute("DROP USER IF EXISTS 'it_native'@'%'")
+            _ = try? await admin.execute("DROP USER 'it_native'@'%'")
             if target.flavor == .mariadb {
                 _ = try await admin.execute("CREATE USER 'it_native'@'%' IDENTIFIED BY 'Native-pw1'")
             } else if target.label.hasPrefix("MySQL 5.5") || target.label.hasPrefix("MySQL 5.6") {
@@ -123,15 +125,29 @@ struct ProtocolIntegrationTests {
             #expect(native.authPlugin == "mysql_native_password")
             await native.close()
         }
-        if plugins.contains("sha256_password") {
-            _ = try await admin.execute("DROP USER IF EXISTS 'it_sha256'@'%'")
-            _ = try await admin.execute("CREATE USER 'it_sha256'@'%' IDENTIFIED WITH sha256_password BY 'Sha256-pw1'")
+        // sha256_password needs TLS or an RSA key pair (OpenSSL builds); yaSSL builds such as 5.6 have neither.
+        let rsaKey = try await admin.execute("SHOW GLOBAL STATUS LIKE 'Rsa_public_key'").first?.text("Value")
+        if plugins.contains("sha256_password"), rsaKey?.contains("BEGIN PUBLIC KEY") == true || target.offersTLS {
+            _ = try? await admin.execute("DROP USER 'it_sha256'@'%'")
+            if target.label.hasPrefix("MySQL 5.6") {
+                // 5.6 syntax: plugin first, then a password hashed with old_passwords = 2, on one connection.
+                try await admin.withConnection { connection in
+                    _ = try await connection.execute("CREATE USER 'it_sha256'@'%' IDENTIFIED WITH sha256_password")
+                    _ = try await connection.execute("SET old_passwords = 2")
+                    _ = try await connection.execute("SET PASSWORD FOR 'it_sha256'@'%' = PASSWORD('Sha256-pw1')")
+                    _ = try await connection.execute("SET old_passwords = 0")
+                }
+            } else {
+                _ = try await admin.execute("CREATE USER 'it_sha256'@'%' IDENTIFIED WITH sha256_password BY 'Sha256-pw1'")
+            }
             configuration.username = "it_sha256"
             configuration.password = "Sha256-pw1"
             configuration.allowPublicKeyRetrieval = true
-            let rsa = try await MySQLConnection.connect(configuration)
-            #expect(rsa.authPlugin == "sha256_password")
-            await rsa.close()
+            if rsaKey?.contains("BEGIN PUBLIC KEY") == true {
+                let rsa = try await MySQLConnection.connect(configuration)
+                #expect(rsa.authPlugin == "sha256_password")
+                await rsa.close()
+            }
             if target.offersTLS {
                 configuration.allowPublicKeyRetrieval = false
                 configuration.tls.mode = .required
