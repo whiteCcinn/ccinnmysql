@@ -21,6 +21,10 @@ public enum JSONValue: Sendable, Hashable {
     }
 
     public static func parse(_ data: Data) throws -> JSONValue {
+        // JSONSerialization recurses per nesting level; deep input would overflow a thread's stack.
+        guard !nestingExceeds(data, limit: maxDepth) else {
+            throw ParseError(description: "JSON nested deeper than \(maxDepth) levels")
+        }
         let object: Any
         do {
             object = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
@@ -31,6 +35,34 @@ public enum JSONValue: Sendable, Hashable {
     }
 
     private static let maxDepth = 128
+
+    /// Linear pre-scan: true when arrays/objects nest deeper than `limit` (strings and escapes are skipped).
+    public static func nestingExceeds(_ data: Data, limit: Int) -> Bool {
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for byte in data {
+            if inString {
+                if escaped {
+                    escaped = false
+                } else if byte == 0x5C {
+                    escaped = true
+                } else if byte == 0x22 {
+                    inString = false
+                }
+                continue
+            }
+            switch byte {
+            case 0x22: inString = true
+            case 0x7B, 0x5B:
+                depth += 1
+                if depth > limit { return true }
+            case 0x7D, 0x5D: depth = max(0, depth - 1)
+            default: break
+            }
+        }
+        return false
+    }
 
     private static func convert(_ object: Any, depth: Int) throws -> JSONValue {
         guard depth <= maxDepth else { throw ParseError(description: "JSON nested deeper than \(maxDepth) levels") }

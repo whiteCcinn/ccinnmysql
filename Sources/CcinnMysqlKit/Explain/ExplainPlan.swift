@@ -87,9 +87,12 @@ public enum ExplainParser {
 
     public static func parseJSON(_ text: String) throws -> ExplainPlan {
         guard text.utf8.count <= 64 * 1024 * 1024 else { throw ExplainParseError(description: "The plan is too large") }
+        let data = Data(text.utf8)
+        // JSONSerialization recurses per nesting level; hostile depth would overflow the stack.
+        guard !JSONValue.nestingExceeds(data, limit: 256) else { throw ExplainParseError(description: "The plan is nested too deeply") }
         let object: Any
         do {
-            object = try JSONSerialization.jsonObject(with: Data(text.utf8))
+            object = try JSONSerialization.jsonObject(with: data)
         } catch {
             throw ExplainParseError(description: "The plan is not valid JSON: \(error.localizedDescription)")
         }

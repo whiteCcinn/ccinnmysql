@@ -139,7 +139,9 @@ struct ExplainParserTests {
         var deep = ""
         for _ in 0..<500 { deep += "{\"query_block\": " }
         deep += "{}" + String(repeating: "}", count: 500)
-        _ = try? ExplainParser.parse(deep)
+        #expect(throws: ExplainParseError.self) { try ExplainParser.parse(deep) }
+        let deeper = String(repeating: "[", count: 100_000)
+        #expect(throws: ExplainParseError.self) { try ExplainParser.parse("{\"a\": " + deeper) }
         var generator = SystemRandomNumberGenerator()
         for _ in 0..<500 {
             let tree = (0..<Int.random(in: 1..<30, using: &generator)).map { _ in

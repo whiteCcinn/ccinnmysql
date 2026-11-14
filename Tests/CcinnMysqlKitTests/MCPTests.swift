@@ -24,6 +24,12 @@ struct MCPJSONTests {
         #expect(text == #""a\"b\\c\u0001\t""#)
     }
 
+    @Test func rejectsDeeplyNestedJSONWithoutRecursing() {
+        let deep = String(repeating: "[", count: 200_000) + String(repeating: "]", count: 200_000)
+        #expect(throws: JSONValue.ParseError.self) { try JSONValue.parse(deep) }
+        #expect(!JSONValue.nestingExceeds(Data("{\"a\": \"[[[[[[\"}".utf8), limit: 2), "brackets inside strings do not count")
+    }
+
     @Test func rejectsInvalidJSON() {
         #expect(throws: (any Error).self) { try JSONValue.parse("{nope") }
     }
