@@ -20,7 +20,7 @@ struct MCPSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Text("CcinnMysql includes a Model Context Protocol server, so AI assistants such as Claude Code, Codex and Claude Desktop can explore your clusters and run queries through your saved connections. Passwords stay in your Keychain and are never shown to the AI.")
+                Text("CcinnMysql includes a Model Context Protocol server, so AI assistants such as Claude Code, Codex and Claude Desktop can explore your MySQL and MariaDB servers, diagnose locks and slow statements, and run queries through your saved connections. Passwords stay in your Keychain and are never shown to the AI.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -41,7 +41,7 @@ struct MCPSettingsView: View {
                         }
                     }
                 }
-                Text("Read-only allows metadata tools and SELECT / SHOW / DESC / EXPLAIN, at most 1,000 rows per call. Read & write adds a tool that runs any statement. Every call is logged to mcp-audit.jsonl in the app's data folder.")
+                Text("Read-only allows metadata and diagnostics tools and SELECT / SHOW / DESCRIBE / EXPLAIN inside read-only transactions, at most 1,000 rows per call. Read & write adds a tool that runs any statement. Every call is logged to mcp-audit.jsonl in the app's data folder.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
