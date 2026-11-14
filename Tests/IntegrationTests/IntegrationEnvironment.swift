@@ -35,6 +35,7 @@ enum IntegrationEnvironment {
         Target(label: "MariaDB 10.11", port: 13321, flavor: .mariadb, offersTLS: false, container: "ccinnmysql-it-mariadb1011"),
         Target(label: "MariaDB 11.4", port: 13314, flavor: .mariadb, offersTLS: true, container: "ccinnmysql-it-mariadb114"),
         Target(label: "MariaDB 12.0", port: 13312, flavor: .mariadb, offersTLS: true, container: "ccinnmysql-it-mariadb120"),
+        Target(label: "MariaDB 11.4 Galera", port: 13340, flavor: .mariadb, offersTLS: true, container: "ccinnmysql-it-galera"),
     ]
 
     /// Listening targets (optionally narrowed with `CCINNMYSQL_IT_TARGETS=m84,mariadb1011` container suffixes).

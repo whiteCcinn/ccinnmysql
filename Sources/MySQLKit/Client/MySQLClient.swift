@@ -1,5 +1,6 @@
 import Foundation
 import MySQLWire
+import os
 
 /// Everything needed to stop a statement on the right server (design D6).
 public struct KillTarget: Sendable, Hashable {
@@ -27,6 +28,8 @@ public final class MySQLClient: Sendable {
     private let effectiveConfiguration: ConnectionConfiguration
     private let transportFactory: TransportFactory
     private let tunnel: SSHTunnel?
+    /// Kills sent in the background (abandoned or cancelled statements), awaited (bounded) by `close()`.
+    private let backgroundKills = OSAllocatedUnfairLock<[UUID: Task<Void, Never>]>(initialState: [:])
 
     /// Default per-statement budget for metadata queries issued by the app itself.
     public static let metadataTimeout: Double = 30
@@ -75,8 +78,30 @@ public final class MySQLClient: Sendable {
     }
 
     public func close() async {
+        await awaitBackgroundKills(seconds: 3)
         await pool.close()
         tunnel?.close()
+    }
+
+    /// Waits (bounded) until background kills have been sent, so a process exit does not leave statements running.
+    public func awaitBackgroundKills(seconds: Double) async {
+        let deadline = ContinuousClock.now + .milliseconds(Int(max(0, min(seconds, 30)) * 1000))
+        while ContinuousClock.now < deadline {
+            let pending = backgroundKills.withLock { Array($0.values) }
+            guard let next = pending.first else { return }
+            _ = await Task { await next.value }.value
+        }
+    }
+
+    /// Sends `KILL QUERY` without waiting; tracked so `close()` can wait for it.
+    public func killInBackground(_ target: KillTarget) {
+        let id = UUID()
+        backgroundKills.withLock { kills in
+            kills[id] = Task.detached { [self] in
+                try? await killQuery(target)
+                _ = backgroundKills.withLock { $0.removeValue(forKey: id) }
+            }
+        }
     }
 
     public var isTunnelled: Bool { tunnel != nil }
@@ -149,7 +174,7 @@ public final class MySQLClient: Sendable {
 
     func killInBackground(_ connection: MySQLConnection) async {
         guard let target = await connection.killTarget else { return }
-        Task.detached { [self] in try? await killQuery(target) }
+        killInBackground(target)
     }
 
     /// Kills must not wait behind a saturated pool, so they use short-lived connections, verified to reach
@@ -160,6 +185,10 @@ public final class MySQLClient: Sendable {
         configuration.connectTimeout = min(configuration.connectTimeout, 10)
         let transportFactory = transportFactory
         let viaProxy = serverInfo.isProxySQL
+        // Without the server's identity a KILL through a load balancer could hit another server's thread.
+        if !viaProxy, target.identity == nil {
+            throw MySQLError(.server, "The server running this statement could not be identified, so CcinnMysql does not send \(verb) through \(configuration.endpoint) (it could reach another server). Connect to that server directly to stop it.")
+        }
         try await Deadline.run(seconds: 30, timeoutError: { MySQLError(.timeout, "The server did not answer \(verb) in time") }) { [configuration] in
             if viaProxy, let proxySessionID = target.proxySessionID {
                 // ProxySQL maps its own session ids to the backend connection.
@@ -169,11 +198,10 @@ public final class MySQLClient: Sendable {
                 await connection.close()
                 return
             }
-            let attempts = target.identity == nil ? 1 : Self.killAttempts
-            for _ in 0..<attempts {
+            for _ in 0..<Self.killAttempts {
                 let connection = try await MySQLConnection.connect(configuration, transportFactory: transportFactory)
                 do {
-                    if let expected = target.identity {
+                        if let expected = target.identity {
                         let reached = try await Self.identify(connection).identity
                         guard reached.matches(expected) else {
                             await connection.close()

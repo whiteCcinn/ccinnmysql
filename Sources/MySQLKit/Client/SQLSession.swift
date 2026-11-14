@@ -14,6 +14,8 @@ public actor SQLSession {
     private var runGeneration: UInt64 = 0
     private var cancelledGeneration: UInt64?
     private var isBusy = false
+    /// A `KILL QUERY` still on its way; the next statement waits for it so it cannot be hit by a late kill.
+    private var pendingKill: Task<Void, Never>?
     /// The server reported an open transaction after the last statement.
     public private(set) var isInTransaction = false
     /// Session-level `SET` statements replayed after a reconnect (bounded, memory only).
@@ -33,6 +35,15 @@ public actor SQLSession {
         guard !isBusy else { throw MySQLError(.busy, "This editor is already running a statement") }
         isBusy = true
         defer { isBusy = false }
+        return try await execute(sql, limits: limits)
+    }
+
+    /// Runs one statement; the caller holds `isBusy`.
+    private func execute(_ sql: String, limits: RowLimits = RowLimits()) async throws -> [ResultSet] {
+        if let pendingKill {
+            await pendingKill.value
+            self.pendingKill = nil
+        }
         let connection = try await ensureConnection()
         runGeneration &+= 1
         let generation = runGeneration
@@ -44,7 +55,7 @@ public actor SQLSession {
             if await connection.isBroken {
                 // An oversized result was abandoned: drop the socket and stop the server-side work.
                 if self.connection === connection { self.connection = nil }
-                if let target { Task.detached { [client] in try? await client.killQuery(target) } }
+                if let target { client.killInBackground(target) }
             } else {
                 isInTransaction = await connection.status.contains(.inTransaction)
             }
@@ -53,7 +64,7 @@ public actor SQLSession {
         } catch let error as MySQLError {
             if await connection.isBroken {
                 if self.connection === connection { self.connection = nil }
-                if error.kind == .cancelled, let target { Task.detached { [client] in try? await client.killQuery(target) } }
+                if error.kind == .cancelled, let target { client.killInBackground(target) }
             } else {
                 isInTransaction = await connection.status.contains(.inTransaction)
             }
@@ -70,9 +81,17 @@ public actor SQLSession {
         guard let target = runningTarget, let connection else { return }
         let generation = runGeneration
         cancelledGeneration = generation
-        do {
-            try await client.killQuery(target)
-        } catch {
+        let client = client
+        let kill = Task { () -> Bool in
+            do {
+                try await client.killQuery(target)
+                return true
+            } catch {
+                return false
+            }
+        }
+        pendingKill = Task { _ = await kill.value }
+        guard await kill.value else {
             if runGeneration == generation, self.connection === connection { connection.forceClose() }
             return
         }
@@ -107,6 +126,44 @@ public actor SQLSession {
     }
 
     public var connectionID: UInt32? { connection?.connectionID }
+
+    /// The session's connection runs with NO_BACKSLASH_ESCAPES (literals must double quotes only).
+    public var noBackslashEscapes: Bool {
+        get async { await connection?.status.contains(.noBackslashEscapes) ?? false }
+    }
+
+    /// Applies a generated row UPDATE on this session's own connection (same time zone, character set and
+    /// sql_mode as the result it came from) inside a transaction, committing only when exactly one row matched.
+    public func applyRowEdit(_ statement: String) async throws {
+        guard !isBusy else { throw MySQLError(.busy, "This editor is running a statement") }
+        guard !isInTransaction else {
+            throw MySQLError(.invalidArgument, "This editor has an open transaction. COMMIT or ROLLBACK it before editing cells.")
+        }
+        // Busy for the whole edit, so no other statement can run inside this transaction.
+        isBusy = true
+        defer { isBusy = false }
+        _ = try await execute("START TRANSACTION")
+        do {
+            let result = try await execute(statement).last
+            let matched = Self.matchedRows(info: result?.info ?? "", affectedRows: result?.affectedRows ?? 0)
+            guard matched == 1 else {
+                _ = try? await execute("ROLLBACK")
+                throw MySQLError(.server, matched == 0
+                    ? "No row matched: it was changed or deleted by someone else. Nothing was saved; reload the result."
+                    : "\(matched) rows matched the key; nothing was saved.")
+            }
+            _ = try await execute("COMMIT")
+        } catch {
+            if isInTransaction { _ = try? await execute("ROLLBACK") }
+            throw error
+        }
+    }
+
+    /// Rows matched by an UPDATE, from its OK packet info (`Rows matched: 1  Changed: 0  Warnings: 0`).
+    static func matchedRows(info: String, affectedRows: UInt64) -> UInt64 {
+        if let match = info.firstMatch(of: /Rows matched:\s*(\d+)/), let value = UInt64(match.output.1.prefix(19)) { return value }
+        return affectedRows
+    }
 
     private func ensureConnection() async throws -> MySQLConnection {
         if let connection, await !connection.isBroken {

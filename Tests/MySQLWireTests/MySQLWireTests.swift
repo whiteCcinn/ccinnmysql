@@ -157,6 +157,16 @@ struct HandshakeTests {
         }
         #expect(plugin == "mysql_clear_password")
         #expect(data == [9, 9])
+
+        var withNUL = PayloadWriter()
+        withNUL.writeUInt8(0xFE)
+        withNUL.writeNullTerminated("client_ed25519")
+        withNUL.writeBytes(Array(repeating: 7, count: 31) + [0])
+        guard case let .authSwitch(_, nonce) = try ServerPacket.parse(withNUL.bytes, capabilities: .standard) else {
+            Issue.record("expected auth switch")
+            return
+        }
+        #expect(nonce.count == 32, "a nonce ending in 0x00 keeps all 32 bytes")
     }
 }
 

@@ -20,11 +20,17 @@ final class FakeCluster: Sendable {
     let backends: Int
     let proxySQL: Bool
     let status: UInt16
+    let identityFails: Bool
+    /// Delay (seconds) before the n-th transport (0-based, in creation order) is handed out.
+    let connectDelays: [Int: Double]
 
-    init(backends: Int = 1, proxySQL: Bool = false, status: UInt16 = 0x0002, reply: @escaping @Sendable (String) -> FakeMySQLServer.Reply) {
+    init(backends: Int = 1, proxySQL: Bool = false, status: UInt16 = 0x0002, identityFails: Bool = false, connectDelays: [Int: Double] = [:],
+         reply: @escaping @Sendable (String) -> FakeMySQLServer.Reply) {
         self.backends = max(1, backends)
         self.proxySQL = proxySQL
         self.status = status
+        self.identityFails = identityFails
+        self.connectDelays = connectDelays
         self.reply = reply
     }
 
@@ -43,9 +49,10 @@ final class FakeCluster: Sendable {
                 return (state.nextID, backend)
             }
             let identity = FakeIdentity(uuid: "uuid-\(backend)", hostname: "db-\(backend)", port: 3306, serverID: Int64(backend + 1))
+            if let delay = connectDelays[Int(id) - 101] { try await Task.sleep(for: .milliseconds(Int(delay * 1000))) }
             // Behind ProxySQL the backend thread id differs from the proxy session id.
             let threadID = proxySQL ? id + 5_000 : id
-            let server = FakeMySQLServer(connectionID: id, threadID: threadID, status: status, identity: identity) { [self] sql in
+            let server = FakeMySQLServer(connectionID: id, threadID: threadID, status: status, identity: identity, identityFails: identityFails) { [self] sql in
                 if sql.hasPrefix("select @@version_comment limit 1") {
                     return .packets(FakeMySQLServer.resultSet([("@@version_comment", .varString)], [[proxySQL ? "(ProxySQL)" : "MySQL Community Server - GPL"]]))
                 }

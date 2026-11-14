@@ -44,9 +44,9 @@ public enum ServerPacket: Sendable, Equatable {
             var reader = PayloadReader(payload)
             try reader.skip(1)
             let plugin = try reader.readNullTerminatedString()
-            var data = reader.readRest()
-            if data.last == 0 { data.removeLast() }
-            return .authSwitch(plugin: plugin, data: data)
+            // Raw plugin data: SHA-based plugins send a 20-byte scramble plus NUL, MariaDB ed25519 a raw 32-byte
+            // nonce that may itself end in 0x00. Each plugin takes the bytes it needs.
+            return .authSwitch(plugin: plugin, data: reader.readRest())
         case 0x01:
             return .authMoreData(Array(payload.dropFirst()))
         default:

@@ -27,28 +27,41 @@ extension MySQLClient {
 
     // MARK: InnoDB
 
-    /// Running transactions, lock waits (with the blocking session) and the latest deadlock.
+    /// Running transactions, lock waits (with the blocking session) and the latest deadlock, all read on one pooled
+    /// connection together with that server's identity, so "kill blocker" reaches the right server.
     public func innoDBActivity() async throws -> InnoDBActivity {
-        var activity = InnoDBActivity()
-        switch try await attempt("""
-            SELECT trx_id, trx_state, trx_started, TIMESTAMPDIFF(SECOND, trx_started, NOW()) AS age_seconds, \
-            TIMESTAMPDIFF(SECOND, trx_wait_started, NOW()) AS wait_seconds, trx_mysql_thread_id, trx_query, trx_operation_state, \
-            trx_tables_locked, trx_rows_locked, trx_rows_modified, trx_isolation_level \
-            FROM information_schema.INNODB_TRX ORDER BY trx_started LIMIT 1000
-            """) {
-        case let .success(result): activity.transactions = result.records.map(InnoDBTransaction.init(record:))
-        case let .failure(error): activity.unavailable["Transactions"] = error.message
+        let lockWaitsQuery = lockWaitsQuery
+        let viaProxy = serverInfo.isProxySQL
+        return try await withConnection { connection in
+            func attempt(_ sql: String) async throws -> Result<ResultSet, MySQLError> {
+                do {
+                    return .success(try await connection.execute(sql))
+                } catch let error as MySQLError where error.kind == .server || error.kind == .authentication {
+                    return .failure(error)
+                }
+            }
+            var activity = InnoDBActivity()
+            activity.identity = viaProxy ? nil : try? await Self.identify(connection).identity
+            switch try await attempt("""
+                SELECT trx_id, trx_state, trx_started, TIMESTAMPDIFF(SECOND, trx_started, NOW()) AS age_seconds, \
+                TIMESTAMPDIFF(SECOND, trx_wait_started, NOW()) AS wait_seconds, trx_mysql_thread_id, trx_query, trx_operation_state, \
+                trx_tables_locked, trx_rows_locked, trx_rows_modified, trx_isolation_level \
+                FROM information_schema.INNODB_TRX ORDER BY trx_started LIMIT 1000
+                """) {
+            case let .success(result): activity.transactions = result.records.map(InnoDBTransaction.init(record:))
+            case let .failure(error): activity.unavailable["Transactions"] = error.message
+            }
+            switch try await attempt(lockWaitsQuery) {
+            case let .success(result): activity.lockWaits = result.records.map(LockWait.init(record:))
+            case let .failure(error): activity.unavailable["Lock waits"] = error.message
+            }
+            switch try await attempt("SHOW ENGINE INNODB STATUS") {
+            case let .success(result):
+                activity.latestDeadlock = result.first?.text("Status").flatMap(Self.latestDeadlock(inInnoDBStatus:))
+            case let .failure(error): activity.unavailable["Deadlocks"] = error.message
+            }
+            return activity
         }
-        switch try await attempt(lockWaitsQuery) {
-        case let .success(result): activity.lockWaits = result.records.map(LockWait.init(record:))
-        case let .failure(error): activity.unavailable["Lock waits"] = error.message
-        }
-        switch try await attempt("SHOW ENGINE INNODB STATUS") {
-        case let .success(result):
-            activity.latestDeadlock = result.first?.text("Status").flatMap(Self.latestDeadlock(inInnoDBStatus:))
-        case let .failure(error): activity.unavailable["Deadlocks"] = error.message
-        }
-        return activity
     }
 
     /// MySQL 8.0+: `performance_schema.data_lock_waits`; MySQL ≤ 5.7 and MariaDB: `information_schema.INNODB_LOCK_WAITS`.

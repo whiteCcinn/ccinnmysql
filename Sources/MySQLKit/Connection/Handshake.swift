@@ -142,7 +142,8 @@ struct AuthExchange {
         case AuthPlugin.ed25519Name:
             plugin = requested
             step = .done
-            return Ed25519.sign(message: nonce, password: Array(password.utf8))
+            // MariaDB signs exactly the 32-byte nonce (a trailing NUL, if any, is not part of it).
+            return Ed25519.sign(message: Array(nonce.prefix(32)), password: Array(password.utf8))
         default:
             if isSwitchRequest {
                 throw MySQLError(.authentication, "The server requires the authentication plugin “\(requested)”, which CcinnMysql does not support.")

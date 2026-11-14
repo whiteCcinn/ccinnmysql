@@ -108,3 +108,16 @@ struct RowEditReviewRegressionTests {
         #expect(RowEditor.eligibility(columns: columns, keys: [["id"]], isBaseTable: true).plan != nil)
     }
 }
+
+@Suite("Review regressions: sql_mode")
+struct SQLModeReviewRegressionTests {
+    @Test func lexerAffectingModesAreRemoved() {
+        #expect(SQLModes.affectsLexing("STRICT_TRANS_TABLES,NO_BACKSLASH_ESCAPES"))
+        #expect(SQLModes.affectsLexing("REAL_AS_FLOAT,PIPES_AS_CONCAT,ANSI_QUOTES,IGNORE_SPACE,ONLY_FULL_GROUP_BY,ANSI"))
+        #expect(!SQLModes.affectsLexing("ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES"))
+        #expect(SQLModes.withoutLexerAffectingModes("REAL_AS_FLOAT,ANSI_QUOTES,ANSI,NO_BACKSLASH_ESCAPES,STRICT_TRANS_TABLES")
+            == "REAL_AS_FLOAT,STRICT_TRANS_TABLES")
+        #expect(SQLModes.withoutLexerAffectingModes("") == "")
+        #expect(SQLModes.withoutLexerAffectingModes("A';DROP") == "", "only mode names survive")
+    }
+}

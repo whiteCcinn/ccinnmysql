@@ -158,13 +158,27 @@ struct AuthPluginConnectionTests {
     }
 
     @Test func ed25519SwitchSignsTheNonce() async throws {
-        let nonce = Array<UInt8>(repeating: 5, count: 20)
-        let server = FakeMySQLServer(auth: .switchTo(plugin: "client_ed25519"))
+        let nonce = Array<UInt8>((1...32).map { UInt8($0) })
+        let server = FakeMySQLServer(auth: .steps(first: [FakeMySQLServer.authSwitch(plugin: "client_ed25519", nonce: nonce)],
+                                                  then: [.init(reply: [FakeMySQLServer.ok()])]))
         _ = try await connect(server, configuration())
         let signature = server.authSwitchReply
         #expect(signature.count == 64)
         let publicKey = try Curve25519.Signing.PublicKey(rawRepresentation: Ed25519.publicKey(password: Array("secret".utf8)))
         #expect(publicKey.isValidSignature(Data(signature), for: Data(nonce)))
+    }
+
+    /// Regression (review #10): a raw 32-byte ed25519 nonce whose last byte is 0x00 must be signed in full.
+    @Test func ed25519NonceEndingInZeroIsSignedInFull() async throws {
+        let nonce = Array<UInt8>(repeating: 9, count: 31) + [0]
+        var writer = PayloadWriter()
+        writer.writeUInt8(0xFE)
+        writer.writeNullTerminated("client_ed25519")
+        writer.writeBytes(nonce)
+        let server = FakeMySQLServer(auth: .steps(first: [writer.bytes], then: [.init(reply: [FakeMySQLServer.ok()])]))
+        _ = try await connect(server, configuration())
+        let publicKey = try Curve25519.Signing.PublicKey(rawRepresentation: Ed25519.publicKey(password: Array("secret".utf8)))
+        #expect(publicKey.isValidSignature(Data(server.authSwitchReply), for: Data(nonce)))
     }
 
     @Test func unknownPluginSwitchFailsClearly() async {

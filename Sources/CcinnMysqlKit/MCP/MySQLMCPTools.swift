@@ -490,6 +490,17 @@ public struct MySQLMCPTools: MCPToolProvider {
                 } else if info.supportsMaxStatementTime {
                     _ = try await session.run("SET SESSION max_statement_time = \(Int(timeout))")
                 }
+                if readOnly {
+                    // The guard tokenized the statement assuming backslash escapes and '"' strings; make the server agree.
+                    let mode = try await session.run("SELECT @@SESSION.sql_mode AS m").last?.scalar ?? ""
+                    if SQLModes.affectsLexing(mode) {
+                        _ = try await session.run("SET SESSION sql_mode = \(SQLText.literal(SQLModes.withoutLexerAffectingModes(mode)))")
+                        let after = try await session.run("SELECT @@SESSION.sql_mode AS m").last?.scalar ?? ""
+                        guard !SQLModes.affectsLexing(after) else {
+                            throw MCPToolError("The session sql_mode (\(after)) changes how SQL is tokenized; read-only calls are refused.")
+                        }
+                    }
+                }
                 let transactional = readOnly && info.supportsReadOnlyTransactions
                 if transactional { _ = try await session.run("START TRANSACTION READ ONLY") }
                 let results = try await session.run(sql, limits: limits)

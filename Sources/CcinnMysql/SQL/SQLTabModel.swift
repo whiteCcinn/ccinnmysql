@@ -151,6 +151,7 @@ final class SQLTabModel {
     unowned let workspace: WorkspaceModel
     private let session: SQLSession
     private var runTask: Task<Void, Never>?
+    private var stopRequested = false
 
     /// Rows kept per result (hard cap) and the default auto-limit for plain SELECTs.
     static let hardRowCap = 100_000
@@ -236,6 +237,8 @@ final class SQLTabModel {
 
     func stop() {
         guard isRunning else { return }
+        // Do not start the remaining statements of "Run All"; the running one is stopped with KILL QUERY.
+        stopRequested = true
         Task { await session.cancel() }
     }
 
@@ -243,6 +246,7 @@ final class SQLTabModel {
     private func run(_ statements: [(text: String, offset: Int?)]) {
         guard !isRunning, !statements.isEmpty else { return }
         errorOffset = nil
+        stopRequested = false
         isRunning = true
         runStartedAt = Date()
         outcomes = []
@@ -260,7 +264,7 @@ final class SQLTabModel {
             }
             for (index, statement) in statements.enumerated() {
                 let succeeded = await execute(statement.text, index: index, offset: statement.offset)
-                if !succeeded || Task.isCancelled { break }
+                if !succeeded || Task.isCancelled || stopRequested { break }
             }
         }
     }
@@ -367,21 +371,27 @@ final class SQLTabModel {
         guard let plan = outcome.editEligibility?.plan, let rowSet = outcome.rowSet, rowSet.rows.indices.contains(row) else { return }
         let original = rowSet.rows[row]
         guard column < original.count, original[column] != newValue else { return }
-        do {
-            let sql = try RowEditor.updateStatement(plan: plan, row: original, changes: [column: newValue])
-            pendingEdit = (outcome, PendingRowEdit(sql: sql, row: row, column: column, newValue: newValue))
-        } catch {
-            workspace.showToast(describe(error), isError: true)
+        Task {
+            // Literals follow the session's sql_mode: the edit runs on the same connection as the result.
+            let noBackslashEscapes = await session.noBackslashEscapes
+            do {
+                let sql = try RowEditor.updateStatement(plan: plan, row: original, changes: [column: newValue], noBackslashEscapes: noBackslashEscapes)
+                pendingEdit = (outcome, PendingRowEdit(sql: sql, row: row, column: column, newValue: newValue))
+            } catch {
+                workspace.showToast(describe(error), isError: true)
+            }
         }
     }
 
     func confirmEdit() {
         guard let (outcome, edit) = pendingEdit else { return }
         pendingEdit = nil
-        let client = workspace.client
+        let session = session
         Task {
             do {
-                try await client.applyRowEdit(edit.sql)
+                // Same connection as the result: session time zone, character set and sql_mode apply to the key values.
+                try await session.applyRowEdit(edit.sql)
+                isInTransaction = await session.isInTransaction
                 outcome.replaceCell(row: edit.row, column: edit.column, value: edit.newValue)
                 await workspace.history.append(QueryHistoryEntry(sql: edit.sql, database: database, durationMilliseconds: 0, affectedRows: 1))
                 workspace.showToast("Row updated")

@@ -65,16 +65,18 @@ final class FakeMySQLServer: ByteTransport, @unchecked Sendable {
     let identity: FakeIdentity
     private let handler: @Sendable (String) -> Reply
     private let failTLS: Bool
+    private let identityFails: Bool
 
     init(connectionID: UInt32 = 7, threadID: UInt32? = nil, version: String = "8.0.33", offersTLS: Bool = false, failTLS: Bool = false,
-         plugin: String = "mysql_native_password", status: UInt16 = 0x0002, identity: FakeIdentity = FakeIdentity(), auth: AuthFlow = .accept,
-         handler: @escaping @Sendable (String) -> Reply = { _ in .packets([FakeMySQLServer.ok()]) }) {
+         plugin: String = "mysql_native_password", status: UInt16 = 0x0002, identity: FakeIdentity = FakeIdentity(), identityFails: Bool = false,
+         auth: AuthFlow = .accept, handler: @escaping @Sendable (String) -> Reply = { _ in .packets([FakeMySQLServer.ok()]) }) {
         self.auth = auth
         self.connectionID = connectionID
         self.threadID = threadID ?? connectionID
         self.identity = identity
         self.handler = handler
         self.failTLS = failTLS
+        self.identityFails = identityFails
         self.status = status
         enqueue([Self.greeting(connectionID: connectionID, version: version, offersTLS: offersTLS, plugin: plugin)], firstSequence: 0)
     }
@@ -213,7 +215,11 @@ final class FakeMySQLServer: ByteTransport, @unchecked Sendable {
                     return
                 }
                 if sql.contains("CONNECTION_ID()") {
-                    enqueue(identityResult(includeUUID: sql.contains("server_uuid")), firstSequence: 1)
+                    if identityFails {
+                        enqueue([Self.error(code: 1193, message: "Unknown system variable 'hostname'")], firstSequence: 1)
+                    } else {
+                        enqueue(identityResult(includeUUID: sql.contains("server_uuid")), firstSequence: 1)
+                    }
                     return
                 }
                 let generation = state.withLockUnchecked { state -> Int in
@@ -313,13 +319,14 @@ final class FakeMySQLServer: ByteTransport, @unchecked Sendable {
 
     static func authMoreData(_ data: [UInt8]) -> [UInt8] { [0x01] + data }
 
-    static func ok(affectedRows: UInt64 = 0, status: UInt16 = 0x0002) -> [UInt8] {
+    static func ok(affectedRows: UInt64 = 0, status: UInt16 = 0x0002, info: String = "") -> [UInt8] {
         var writer = PayloadWriter()
         writer.writeUInt8(0)
         writer.writeLengthEncoded(affectedRows)
         writer.writeLengthEncoded(0)
         writer.writeUInt16(status)
         writer.writeUInt16(0)
+        writer.writeBytes(Array(info.utf8))
         return writer.bytes
     }
 

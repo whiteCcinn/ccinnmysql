@@ -103,8 +103,17 @@ enum MCPCommand {
             signal(terminating, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: terminating, queue: .main)
             source.setEventHandler {
-                SSHTunnel.terminateAll()
-                exit(0)
+                // Cancel in-flight calls (which kills their statements) and wait briefly for those kills.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
+                    SSHTunnel.terminateAll()
+                    exit(0)
+                }
+                Task {
+                    await server.shutdown()
+                    await registry.closeAll()
+                    SSHTunnel.terminateAll()
+                    exit(0)
+                }
             }
             source.resume()
             SignalSources.retain(source)
