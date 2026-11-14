@@ -67,8 +67,11 @@ struct ResultGrid: NSViewRepresentable {
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         let coordinator = context.coordinator
         let changed = coordinator.parent.resultID != resultID
+        let editingChanged = (coordinator.parent.onEdit == nil) != (onEdit == nil)
         coordinator.parent = self
         if changed { coordinator.load(self) }
+        // Editability is decided after the rows arrive; keep the context menu in sync.
+        if editingChanged, let tableView = coordinator.tableView { tableView.menu = coordinator.makeMenu() }
     }
 
     @MainActor

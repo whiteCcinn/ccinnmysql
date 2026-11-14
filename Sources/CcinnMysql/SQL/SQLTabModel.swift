@@ -297,7 +297,10 @@ final class SQLTabModel {
             database = await session.database
             if kind == .definition || kind == .use { refreshSidebar(after: sql) }
             if kind == .explain, let rowSet = outcome.rowSet { await preparePlan(outcome, rowSet) }
-            if kind == .query, let rowSet = outcome.rowSet, !rowSet.rows.isEmpty { await prepareEditing(outcome, rowSet) }
+            if kind == .query, let rowSet = outcome.rowSet, !rowSet.rows.isEmpty {
+                // Key lookup runs on the pool, after the statement, without delaying the next statement.
+                Task { await prepareEditing(outcome, rowSet) }
+            }
         } catch {
             outcome.errorMessage = describe(error)
             outcome.errorCode = (error as? MySQLError)?.code
