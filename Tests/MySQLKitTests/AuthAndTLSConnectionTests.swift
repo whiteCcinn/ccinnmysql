@@ -218,7 +218,7 @@ struct KillPinningTests {
         let long = Task { try await session.run("SELECT 'long'") }
         try await Task.sleep(for: .milliseconds(150))
         let target = try #require(await session.runningTarget)
-        #expect(target.threadID != target.proxySessionID)
+        #expect(target.threadID != UInt64(target.proxySessionID ?? 0))
         await session.cancel(graceSeconds: 2)
         await #expect { _ = try await long.value } throws: { ($0 as? MySQLError)?.kind == .cancelled }
         #expect(cluster.kills.map(\.statement) == ["KILL QUERY \(target.proxySessionID ?? 0)"])

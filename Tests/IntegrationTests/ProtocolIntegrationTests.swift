@@ -195,7 +195,7 @@ struct ProtocolIntegrationTests {
         _ = try await session.run("START TRANSACTION")
         _ = try await session.run("UPDATE tx SET v = v + 1 WHERE id = 1")
         #expect(await session.isInTransaction)
-        let threadID = try #require(try await session.run("SELECT CONNECTION_ID()").last?.scalar.flatMap { UInt32($0) })
+        let threadID = try #require(try await session.run("SELECT CONNECTION_ID()").last?.scalar.flatMap { UInt64($0) })
         try await client.killConnection(KillTarget(threadID: threadID, identity: client.serverInfo.identity))
         try await Task.sleep(for: .milliseconds(300))
         var sawLoss = false

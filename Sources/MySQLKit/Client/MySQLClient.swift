@@ -4,13 +4,13 @@ import MySQLWire
 /// Everything needed to stop a statement on the right server (design D6).
 public struct KillTarget: Sendable, Hashable {
     /// `CONNECTION_ID()` on the server (the thread to kill).
-    public let threadID: UInt32
+    public let threadID: UInt64
     /// Connection id from the greeting: the proxy's session id behind ProxySQL.
     public let proxySessionID: UInt32?
     /// The server the thread lives on; `nil` when it could not be determined.
     public let identity: ServerIdentity?
 
-    public init(threadID: UInt32, proxySessionID: UInt32? = nil, identity: ServerIdentity?) {
+    public init(threadID: UInt64, proxySessionID: UInt32? = nil, identity: ServerIdentity?) {
         self.threadID = threadID
         self.proxySessionID = proxySessionID
         self.identity = identity
@@ -202,7 +202,7 @@ public final class MySQLClient: Sendable {
             await connection.setKillTarget(KillTarget(threadID: threadID, proxySessionID: connection.connectionID, identity: identity))
         } catch let error as MySQLError where error.kind == .server {
             // Identity is best effort (e.g. exotic proxies); fall back to the greeting's connection id.
-            await connection.setKillTarget(KillTarget(threadID: connection.connectionID, proxySessionID: connection.connectionID, identity: nil))
+            await connection.setKillTarget(KillTarget(threadID: UInt64(connection.connectionID), proxySessionID: connection.connectionID, identity: nil))
         } catch {
             await connection.close()
             throw error
@@ -211,7 +211,7 @@ public final class MySQLClient: Sendable {
     }
 
     /// `CONNECTION_ID()` and server identity of the server a connection reached.
-    static func identify(_ connection: MySQLConnection) async throws -> (threadID: UInt32, identity: ServerIdentity) {
+    static func identify(_ connection: MySQLConnection) async throws -> (threadID: UInt64, identity: ServerIdentity) {
         let version = connection.protocolVersion
         let parsed = ServerVersion(version)
         let hasUUID = version.range(of: "MariaDB", options: .caseInsensitive) == nil && (parsed?.atLeast(5, 6) ?? false)
@@ -226,7 +226,7 @@ public final class MySQLClient: Sendable {
         }
         if row == nil { row = try await connection.execute("SELECT \(base)").first }
         guard let row else { throw MySQLError(.protocolViolation, "The server returned no identity row") }
-        let threadID = row.int("thread_id").flatMap { UInt32(exactly: $0) } ?? connection.connectionID
+        let threadID = row.int("thread_id").flatMap { UInt64(exactly: $0) } ?? UInt64(connection.connectionID)
         let identity = ServerIdentity(serverUUID: row.text("server_uuid"), hostname: row.text("hostname"),
                                       port: row.int("port").map { Int(clamping: $0) }, serverID: row.int("server_id"))
         return (threadID, identity)
