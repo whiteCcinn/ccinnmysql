@@ -120,6 +120,12 @@ extension MySQLClient {
         }
     }
 
+    /// True for `BASE TABLE` (not a view) according to `information_schema.TABLES`.
+    public func isBaseTable(schema: String, table: String) async throws -> Bool {
+        let type = try await execute("SELECT TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA = \(SQLText.literal(schema)) AND TABLE_NAME = \(SQLText.literal(table))").scalar
+        return type?.uppercased() == "BASE TABLE"
+    }
+
     /// Identifying keys of a table for row editing: the primary key, then NOT NULL unique keys.
     public func identifyingKeys(schema: String, table: String) async throws -> [[String]] {
         let indexes = try await indexes(schema: schema, table: table)

@@ -68,6 +68,10 @@ public struct ExplainPlan: Sendable {
 
 public struct ExplainParseError: Error, Sendable, CustomStringConvertible {
     public let description: String
+
+    public init(description: String) {
+        self.description = description
+    }
 }
 
 /// Parses `EXPLAIN FORMAT=JSON` (MySQL v1 and v2 formats, MariaDB, MariaDB `ANALYZE FORMAT=JSON`) and

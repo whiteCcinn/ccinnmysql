@@ -158,7 +158,7 @@ public final class SSHTunnel: Sendable {
         guard isSafeToken(host) else { throw MySQLError(.sshTunnel, "Invalid SSH host '\(configuration.host)'") }
         guard user.isEmpty || isSafeToken(user) else { throw MySQLError(.sshTunnel, "Invalid SSH user name '\(configuration.username)'") }
         guard (1...65535).contains(configuration.port) else { throw MySQLError(.sshTunnel, "Invalid SSH port \(configuration.port)") }
-        guard isSafeToken(remote.host) else { throw MySQLError(.sshTunnel, "Invalid StarRocks host '\(remote.host)'") }
+        guard isSafeToken(remote.host) else { throw MySQLError(.sshTunnel, "Invalid database host '\(remote.host)'") }
 
         let remoteHost = remote.isIPv6 ? "[\(remote.host)]" : remote.host
         var arguments = [

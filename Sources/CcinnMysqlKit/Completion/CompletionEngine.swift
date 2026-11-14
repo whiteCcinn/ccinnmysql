@@ -147,7 +147,7 @@ public enum CompletionEngine {
     }
 
     static let aliasStopWords: Set<String> = SQLKeywords.reserved.union([
-        "LATERAL", "WINDOW", "SEMI", "ANTI", "OUTER", "INNER", "PARTITION", "TABLET", "LIMIT", "WHERE", "ON", "USING",
+        "LATERAL", "WINDOW", "OUTER", "INNER", "PARTITION", "LIMIT", "WHERE", "ON", "USING", "FORCE", "IGNORE", "STRAIGHT_JOIN",
     ])
 
     /// Tables, derived tables and CTEs referenced anywhere in the statement, with their aliases.

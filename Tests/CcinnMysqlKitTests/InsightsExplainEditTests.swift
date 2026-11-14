@@ -207,3 +207,29 @@ struct RowEditorTests {
         #expect(RowEditor.matchedRows(info: "Rows matched: 99999999999999999999999  Changed: 0", affectedRows: 0) != 1, "huge numbers never look like one row")
     }
 }
+
+@Suite("Status metrics")
+struct StatusMetricsTests {
+    @Test func ratesPerSecondSkipGaugesAndResets() {
+        let before = [ServerVariable(name: "Questions", value: "1000"), ServerVariable(name: "Threads_connected", value: "5"),
+                      ServerVariable(name: "Com_select", value: "500"), ServerVariable(name: "Bytes_sent", value: "900"),
+                      ServerVariable(name: "Ssl_version", value: "TLSv1.3")]
+        let after = [ServerVariable(name: "Questions", value: "1600"), ServerVariable(name: "Threads_connected", value: "9"),
+                     ServerVariable(name: "Com_select", value: "560"), ServerVariable(name: "Bytes_sent", value: "100"),
+                     ServerVariable(name: "Ssl_version", value: "TLSv1.3")]
+        let rates = StatusMetrics.rates(previous: before, current: after, seconds: 2)
+        #expect(rates["Questions"] == 300)
+        #expect(rates["Com_select"] == 30)
+        #expect(rates["Threads_connected"] == nil, "gauges are not rates")
+        #expect(rates["Bytes_sent"] == nil, "counters that went backwards are skipped")
+        #expect(rates["Ssl_version"] == nil)
+        #expect(StatusMetrics.rates(previous: before, current: after, seconds: 0).isEmpty)
+        #expect(StatusMetrics.rates(previous: before, current: after, seconds: .nan).isEmpty)
+    }
+
+    @Test func bufferPoolHitRatio() {
+        let status = [ServerVariable(name: "Innodb_buffer_pool_read_requests", value: "10000"), ServerVariable(name: "Innodb_buffer_pool_reads", value: "100")]
+        #expect(StatusMetrics.bufferPoolHitRatio(status) == 0.99)
+        #expect(StatusMetrics.bufferPoolHitRatio([]) == nil)
+    }
+}
