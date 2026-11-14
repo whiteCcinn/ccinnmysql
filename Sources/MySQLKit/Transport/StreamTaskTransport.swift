@@ -18,6 +18,8 @@ final class StreamTaskTransport: ByteTransport, @unchecked Sendable {
         /// No decrypted byte has arrived since `startTLS`: transport errors are TLS handshake failures.
         var tlsPending = false
         var closed = false
+        /// The task failed on its own (reported to the delegate).
+        var failed = false
     }
 
     /// One session per connection: TLS sessions must never be resumed across connections with different
@@ -47,9 +49,14 @@ final class StreamTaskTransport: ByteTransport, @unchecked Sendable {
         let session = makeSession(legacy: legacyTLS, delegate: delegate)
         let task = session.streamTask(withHostName: host, port: endpoint.port)
         let transport = StreamTaskTransport(task: task, session: session, endpoint: endpoint, delegate: delegate)
+        // A failed task (e.g. TLS handshake) may leave a pending read waiting forever: fail it promptly.
+        delegate.onFailure { [weak transport] in transport?.failPending() }
         task.resume()
         return transport
     }
+
+    /// TLS was started and no decrypted byte has arrived yet.
+    var tlsHandshakePending: Bool { state.withLock { $0.tlsPending } }
 
     func startTLS(_ options: TLSOptions) throws {
         try state.withLock { state in
@@ -89,6 +96,12 @@ final class StreamTaskTransport: ByteTransport, @unchecked Sendable {
             throw MySQLError(.connectionClosed, "\(endpoint) closed the connection")
         }
         throw MySQLError(.network, "Connection to \(endpoint) returned no data")
+    }
+
+    /// Cancels the task after a delegate-reported failure; pending calls then fail and `describe` reports the cause.
+    func failPending() {
+        state.withLock { $0.failed = true }
+        task.cancel()
     }
 
     func close() {
@@ -163,6 +176,8 @@ final class TrustDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable
         var options = TLSOptions.disabled
         var identity: SecIdentity?
         var trustFailure: String?
+        var completionError: NSError?
+        var onFailure: (@Sendable () -> Void)?
     }
 
     private let configuration = OSAllocatedUnfairLock<Configuration>(uncheckedState: Configuration())
@@ -179,6 +194,21 @@ final class TrustDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable
     }
 
     var trustFailure: String? { configuration.withLockUnchecked { $0.trustFailure } }
+    /// The error the task finished with (TLS handshake failures arrive here, not on the pending read).
+    var completionError: NSError? { configuration.withLockUnchecked { $0.completionError } }
+
+    func onFailure(_ handler: @escaping @Sendable () -> Void) {
+        configuration.withLockUnchecked { $0.onFailure = handler }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
+        guard let error else { return }
+        let handler = configuration.withLockUnchecked { state -> (@Sendable () -> Void)? in
+            state.completionError = error as NSError
+            return state.onFailure
+        }
+        handler?()
+    }
     var failureSuffix: String { trustFailure.map { ": \($0)" } ?? "" }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didReceive challenge: URLAuthenticationChallenge,

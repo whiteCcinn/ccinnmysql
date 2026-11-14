@@ -53,7 +53,6 @@ struct TLSNegotiationTests {
         let connection = try await connect(server, configuration(tls: .preferred))
         #expect(!server.sawSSLRequest)
         #expect(!connection.isTLS)
-        #expect(connection.tlsFallbackReason == nil)
     }
 
     @Test func requiredFailsBeforeSendingCredentials() async {
@@ -62,14 +61,14 @@ struct TLSNegotiationTests {
         #expect(server.handshakeResponse.isEmpty, "no credentials may be sent")
     }
 
-    @Test func preferredFallsBackToPlaintextWhenTheTLSHandshakeFails() async throws {
+    @Test func preferredNeverFallsBackToPlaintextAfterTheHandshakeStarted() async throws {
         let servers = [FakeMySQLServer(connectionID: 1, offersTLS: true, failTLS: true), FakeMySQLServer(connectionID: 2, offersTLS: true)]
         let attempts = Attempts()
-        let connection = try await MySQLConnection.connect(configuration(tls: .preferred)) { _, _ in servers[min(attempts.next(), 1)] }
-        #expect(connection.connectionID == 2)
-        #expect(!connection.isTLS)
-        #expect(connection.tlsFallbackReason?.contains("TLS") == true)
-        #expect(!servers[1].sawSSLRequest)
+        await #expect { _ = try await MySQLConnection.connect(configuration(tls: .preferred)) { _, _ in servers[min(attempts.next(), 1)] } } throws: {
+            ($0 as? MySQLError)?.kind == .tls
+        }
+        #expect(attempts.next() == 1, "no second (plaintext) attempt")
+        #expect(servers[0].handshakeResponse.isEmpty || servers[0].tlsStarted)
     }
 
     @Test func requiredDoesNotFallBack() async {

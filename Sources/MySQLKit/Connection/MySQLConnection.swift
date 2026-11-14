@@ -52,8 +52,6 @@ public actor MySQLConnection {
     public nonisolated let capabilities: Capabilities
     public nonisolated let isTLS: Bool
     public nonisolated let authPlugin: String
-    /// Why `preferred` TLS fell back to plaintext, if it did.
-    public nonisolated let tlsFallbackReason: String?
     private nonisolated let transport: any ByteTransport
 
     private var channel: PacketChannel?
@@ -68,14 +66,13 @@ public actor MySQLConnection {
         killTarget = target
     }
 
-    init(endpoint: Endpoint, outcome: HandshakeOutcome, channel: PacketChannel, tlsFallbackReason: String?) {
+    init(endpoint: Endpoint, outcome: HandshakeOutcome, channel: PacketChannel) {
         self.endpoint = endpoint
         connectionID = outcome.greeting.connectionID
         protocolVersion = outcome.greeting.serverVersion
         capabilities = outcome.capabilities
         isTLS = outcome.isTLS
         authPlugin = outcome.authPlugin
-        self.tlsFallbackReason = tlsFallbackReason
         status = ServerStatus(rawValue: outcome.statusFlags)
         transport = channel.transport
         self.channel = channel
@@ -83,21 +80,24 @@ public actor MySQLConnection {
 
     // MARK: Connect
 
+    /// Opens and authenticates a connection. In every TLS mode, once the TLS handshake has started a failure is
+    /// final: CcinnMysql never retries in plaintext (design D2), because a network attacker could force that.
     public static func connect(_ configuration: ConnectionConfiguration,
                                transportFactory: TransportFactory = Transports.network) async throws -> MySQLConnection {
-        do {
-            return try await connectOnce(configuration, transportFactory: transportFactory, fallbackReason: nil)
-        } catch let error as MySQLError where error.kind == .tls && configuration.tls.mode == .preferred {
-            // Opportunistic TLS (design D2): an incompatible TLS stack must not lock users out.
-            if Task.isCancelled { throw MySQLError.cancelled() }
-            var plaintext = configuration
-            plaintext.tls.mode = .disabled
-            return try await connectOnce(plaintext, transportFactory: transportFactory, fallbackReason: error.message)
-        }
+        try await connectOnce(configuration, transportFactory: transportFactory)
     }
 
-    private static func connectOnce(_ configuration: ConnectionConfiguration, transportFactory: TransportFactory,
-                                    fallbackReason: String?) async throws -> MySQLConnection {
+    /// A TLS handshake that never completes (the system TLS stack rejected the server's protocol version, e.g. a
+    /// TLS 1.0-only yaSSL build) surfaces as a stalled read; explain the likely cause and the ways out.
+    static func tlsStallError(_ configuration: ConnectionConfiguration) -> MySQLError {
+        let endpoint = configuration.endpoint
+        if configuration.tls.allowLegacyProtocols {
+            return MySQLError(.tls, "The TLS handshake with \(endpoint) did not complete: the server offers no protocol or cipher this Mac accepts. Use an SSH tunnel, or set TLS to Disabled for this connection.")
+        }
+        return MySQLError(.tls, "The TLS handshake with \(endpoint) did not complete: the server does not support TLS 1.2 or newer. Old MySQL 5.6/5.7 builds (yaSSL) only speak TLS 1.0/1.1 — enable “Allow TLS 1.0 / 1.1” for this connection, connect through an SSH tunnel, or set TLS to Disabled.")
+    }
+
+    private static func connectOnce(_ configuration: ConnectionConfiguration, transportFactory: TransportFactory) async throws -> MySQLConnection {
         let endpoint = configuration.endpoint
         let timeout = max(1, configuration.connectTimeout)
         if Task.isCancelled { throw MySQLError.cancelled() }
@@ -110,7 +110,7 @@ public actor MySQLConnection {
             }) {
                 try await withTaskCancellationHandler {
                     let (channel, outcome) = try await Handshake.perform(transport: transport, configuration: configuration)
-                    let connection = MySQLConnection(endpoint: endpoint, outcome: outcome, channel: channel, tlsFallbackReason: fallbackReason)
+                    let connection = MySQLConnection(endpoint: endpoint, outcome: outcome, channel: channel)
                     do {
                         try await connection.applyInitialContext(configuration)
                     } catch {
@@ -123,9 +123,12 @@ public actor MySQLConnection {
                 }
             }
         } catch {
+            let stalledInTLS = transport.tlsHandshakePending
             transport.close()
             if Task.isCancelled { throw MySQLError.cancelled() }
-            throw Self.mapError(error, endpoint: endpoint)
+            let mapped = Self.mapError(error, endpoint: endpoint)
+            if mapped.kind == .timeout, stalledInTLS { throw tlsStallError(configuration) }
+            throw mapped
         }
     }
 

@@ -121,13 +121,12 @@ public struct ServerInfo: Sendable, Equatable {
     public let tlsVersion: String?
     public let tlsCipher: String?
     public let authPlugin: String
-    public let tlsFallbackReason: String?
 
     public init(versionString: String, versionComment: String = "", protocolVersion: String, currentUser: String? = nil,
                 identity: ServerIdentity = ServerIdentity(serverUUID: nil, hostname: nil, port: nil, serverID: nil),
                 isProxySQL: Bool = false, readOnly: Bool = false, superReadOnly: Bool = false, performanceSchemaEnabled: Bool = false,
                 galeraEnabled: Bool = false, characterSet: String? = nil, timeZone: String? = nil, lowerCaseTableNames: Int? = nil,
-                tlsVersion: String? = nil, tlsCipher: String? = nil, authPlugin: String = "", tlsFallbackReason: String? = nil) {
+                tlsVersion: String? = nil, tlsCipher: String? = nil, authPlugin: String = "") {
         self.versionString = versionString
         self.versionComment = versionComment
         version = ServerVersion(versionString) ?? ServerVersion(protocolVersion)
@@ -146,7 +145,6 @@ public struct ServerInfo: Sendable, Equatable {
         self.tlsVersion = tlsVersion
         self.tlsCipher = tlsCipher
         self.authPlugin = authPlugin
-        self.tlsFallbackReason = tlsFallbackReason
     }
 
     public var isMariaDB: Bool { flavor == .mariadb }
@@ -251,7 +249,7 @@ public struct ServerInfo: Sendable, Equatable {
             performanceSchemaEnabled: performanceSchema, galeraEnabled: galera, characterSet: base?.text("cs"), timeZone: timeZone,
             lowerCaseTableNames: base?.int("lctn").map { Int(clamping: $0) },
             tlsVersion: connection.isTLS ? (tlsVersion ?? "TLS") : nil, tlsCipher: tlsCipher,
-            authPlugin: connection.authPlugin, tlsFallbackReason: connection.tlsFallbackReason)
+            authPlugin: connection.authPlugin)
     }
 
     /// `nil` when the server rejects the statement; timeouts, network errors and cancellation propagate (design D8).

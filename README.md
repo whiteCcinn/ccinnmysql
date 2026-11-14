@@ -74,7 +74,7 @@ CcinnMysql puts those answers one click away, in a native SwiftUI/AppKit app wit
 | MariaDB `client_ed25519` | ✅ (pure-Swift Ed25519, RFC 8032 test vectors) |
 | `mysql_clear_password` | opt-in per connection (LDAP / PAM accounts) |
 
-TLS is negotiated on the same socket after the server greeting (`SSLRequest`), like the `mysql` client. Old servers whose TLS stack only speaks TLS 1.0 with legacy ciphers fall back to plaintext in *Preferred* mode (the connection details say so) and fail clearly in *Required*. Metadata is read from `information_schema` with `SHOW` fallbacks, always **by column name**, and features that need privileges or a newer version degrade with an explanation. CcinnMysql runs on **macOS 14 Sonoma or later** (Apple silicon and Intel).
+TLS is negotiated on the same socket after the server greeting (`SSLRequest`), like the `mysql` client. *Preferred* stays in plaintext only when the server offers no TLS at all; once a TLS handshake has started, a failure is final — CcinnMysql never retries in plaintext. Old MySQL 5.6/5.7 builds that only speak TLS 1.0/1.1 get a specific error; enable **Allow TLS 1.0 / 1.1** for that connection or use an SSH tunnel. Metadata is read from `information_schema` with `SHOW` fallbacks, always **by column name**, and features that need privileges or a newer version degrade with an explanation. CcinnMysql runs on **macOS 14 Sonoma or later** (Apple silicon and Intel).
 
 ## Screenshots
 

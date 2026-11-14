@@ -24,6 +24,12 @@ public protocol ByteTransport: AnyObject, Sendable {
     /// Upgrades the same stream to TLS (design D1). Bytes sent afterwards are encrypted; errors of the
     /// TLS handshake surface on the next `send`/`receive` as `MySQLError.Kind.tls`.
     func startTLS(_ options: TLSOptions) throws
+    /// TLS was started on this stream and the handshake has not produced any data yet.
+    var tlsHandshakePending: Bool { get }
+}
+
+extension ByteTransport {
+    public var tlsHandshakePending: Bool { false }
 }
 
 public struct TransportOptions: Sendable, Equatable {

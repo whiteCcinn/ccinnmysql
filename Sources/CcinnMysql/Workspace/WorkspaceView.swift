@@ -80,7 +80,9 @@ private struct ConnectionBadge: View {
             Text(workspace.profile.displayName).font(.headline).lineLimit(1)
             Badge(text: workspace.versionLabel, color: Theme.accent)
             if workspace.serverInfo.isTLS {
-                Badge(text: "TLS", color: .green, systemImage: "lock.fill").help(workspace.serverInfo.tlsVersion ?? "")
+                Badge(text: "TLS", color: .green, systemImage: "lock.fill").help("Encrypted: \(workspace.serverInfo.tlsVersion ?? "TLS")")
+            } else if !workspace.client.isTunnelled {
+                Badge(text: "No TLS", color: .orange, systemImage: "lock.open").help("This connection is not encrypted")
             }
             if workspace.serverInfo.isProxySQL {
                 Badge(text: "ProxySQL", color: .purple)

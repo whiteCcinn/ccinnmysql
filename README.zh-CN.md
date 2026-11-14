@@ -74,7 +74,7 @@ CcinnMysql 把这些答案放在一次点击之内。它是原生 SwiftUI/AppKit
 | MariaDB `client_ed25519` | ✅（纯 Swift Ed25519，通过 RFC 8032 测试向量） |
 | `mysql_clear_password` | 需在连接中单独开启（LDAP / PAM 账号） |
 
-TLS 与 `mysql` 客户端一样，在服务器握手包之后通过 `SSLRequest` 在同一个套接字上协商。只支持 TLS 1.0 与旧密码套件的老服务器，在"首选"模式下会回退为明文（连接信息中会注明），在"必需"模式下则明确失败。元数据从 `information_schema` 读取并带有 `SHOW` 回退，始终**按列名**解析；需要权限或更高版本的功能会给出说明而不是报错。CcinnMysql 需要 **macOS 14 Sonoma 或更高版本**（Apple 芯片与 Intel 均可）。
+TLS 与 `mysql` 客户端一样，在服务器握手包之后通过 `SSLRequest` 在同一个套接字上协商。"首选"模式只有在服务器完全不提供 TLS 时才使用明文；一旦开始 TLS 握手，失败即终止——CcinnMysql 绝不会退回明文重试。只支持 TLS 1.0/1.1 的老版本 MySQL 5.6/5.7 会得到明确的错误提示，可为该连接开启 **Allow TLS 1.0 / 1.1** 或使用 SSH 隧道。元数据从 `information_schema` 读取并带有 `SHOW` 回退，始终**按列名**解析；需要权限或更高版本的功能会给出说明而不是报错。CcinnMysql 需要 **macOS 14 Sonoma 或更高版本**（Apple 芯片与 Intel 均可）。
 
 ## 截图
 

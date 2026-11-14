@@ -137,8 +137,10 @@ private struct ServerOverview: View {
                         }
                     }
                 }
-                if let reason = model.info.tlsFallbackReason {
-                    NoticeBanner(message: "TLS was offered but could not be negotiated, so this connection is not encrypted: \(reason)",
+                if !model.info.isTLS, !model.workspace.client.isTunnelled {
+                    NoticeBanner(message: model.workspace.profile.tlsMode == .disabled
+                                    ? "TLS is disabled for this connection: queries and results travel unencrypted."
+                                    : "The server does not offer TLS, so this connection is not encrypted. Configure TLS on the server or use an SSH tunnel.",
                                  systemImage: "lock.open", color: .orange)
                 }
                 if case let .failed(message) = model.status { ErrorBanner(message: message) }

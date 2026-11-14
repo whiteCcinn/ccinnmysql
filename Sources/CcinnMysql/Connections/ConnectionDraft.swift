@@ -121,7 +121,6 @@ final class ConnectionDraft {
                 message += " · " + (info.tlsVersion.map { "encrypted (\($0))" } ?? "not encrypted")
                 message += " · \(info.authPlugin) · \(schemas) schemas"
                 if let user = info.currentUser { message += " · \(user)" }
-                if let reason = info.tlsFallbackReason { message += "\nTLS fell back to plaintext: \(reason)" }
                 testState = .succeeded(message)
             } catch {
                 guard !Task.isCancelled else { return }

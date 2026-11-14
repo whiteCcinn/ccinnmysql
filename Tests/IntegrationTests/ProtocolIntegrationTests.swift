@@ -17,7 +17,7 @@ struct ProtocolIntegrationTests {
         defer { Task { await client.close() } }
         let info = client.serverInfo
         #expect(info.flavor == target.flavor, "\(info.versionString) / \(info.versionComment)")
-        #expect(info.isTLS == target.offersTLS, "TLS: \(info.tlsVersion ?? "none"), fallback: \(info.tlsFallbackReason ?? "-")")
+        #expect(info.isTLS == target.offersTLS, "TLS: \(info.tlsVersion ?? "none")")
         if info.isTLS { #expect(info.tlsVersion?.hasPrefix("TLSv1") == true) }
         #expect(info.identity.hostname != nil)
         let rows = try await client.execute("SELECT 1 AS one, NULL AS nothing, 'é😀' AS text").first
