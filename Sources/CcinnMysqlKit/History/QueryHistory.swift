@@ -51,6 +51,7 @@ public actor QueryHistoryStore {
 
     public func append(_ entry: QueryHistoryEntry) {
         var entry = entry
+        entry.errorMessage = entry.errorMessage.map { SQLRedactor.redact(message: $0, statement: entry.sql) }
         entry.sql = SQLRedactor.redact(entry.sql)
         if entry.sql.count > maxStatementLength { entry.sql = String(entry.sql.prefix(maxStatementLength)) }
         var all = loadIfNeeded()

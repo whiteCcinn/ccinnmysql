@@ -25,6 +25,24 @@ public enum SQLRedactor {
         return String(decoding: units, as: UTF16.self)
     }
 
+    /// Removes the statement's secret literals from a server message that echoes the statement
+    /// (e.g. `… near 'USR bob IDENTIFIED BY 'Hunter2'' at line 1`).
+    public static func redact(message: String, statement: String) -> String {
+        let lexer = SQLLexer(statement)
+        let tokens = lexer.tokens().filter { $0.kind != .comment }
+        var message = message
+        for (index, token) in tokens.enumerated() where token.kind == .string && isSecretLiteral(at: index, tokens: tokens, lexer: lexer) {
+            let literal = lexer.text(of: token)
+            guard literal.count >= 2 else { continue }
+            let inner = String(literal.dropFirst().dropLast())
+            guard !inner.isEmpty else { continue }
+            message = message.replacingOccurrences(of: literal, with: "'***'")
+            message = message.replacingOccurrences(of: "'\(inner)'", with: "'***'")
+            if inner.count >= 4 { message = message.replacingOccurrences(of: inner, with: "***") }
+        }
+        return message
+    }
+
     static func isSecretLiteral(at index: Int, tokens: [SQLToken], lexer: SQLLexer) -> Bool {
         func word(_ offset: Int) -> String {
             let position = index + offset
@@ -37,6 +55,8 @@ public enum SQLRedactor {
         if word(-1) == "PASSWORD", word(-2) == "BY" { return true }
         if word(-1) == "AS", word(-3) == "WITH", word(-4) == "IDENTIFIED" { return true }
         if word(-1) == "USING", word(-3) == "VIA" || word(-3) == "WITH" { return true }
+        // … IDENTIFIED BY 'new' REPLACE 'current'  /  SET PASSWORD = 'new' REPLACE 'current'
+        if word(-1) == "REPLACE", index >= 2, tokens[index - 2].kind == .string { return true }
         // PASSWORD '…', SOURCE_PASSWORD = '…', PASSWORD('…'), SET PASSWORD FOR u = '…', OLD_PASSWORD('…')
         if isPasswordWord(word(-1)) || (word(-1) == "(" && (isPasswordWord(word(-2)) || word(-2) == "OLD_PASSWORD")) { return true }
         if word(-1) == "=", isPasswordWord(word(-2)) { return true }

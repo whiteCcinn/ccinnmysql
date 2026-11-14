@@ -36,8 +36,14 @@ public enum RowEditor {
         guard let first = mapped.first?.element else { return .readOnly("The result has no columns from a table.") }
         let schema = first.schema
         let table = first.originalTable
+        let alias = first.table
         guard mapped.allSatisfy({ $0.element.originalTable == table && $0.element.schema == schema }) else {
             return .readOnly("Cells are read-only: the result combines several tables.")
+        }
+        // A self-join reports the same base table under several aliases; a key from one alias must never
+        // identify a row of another.
+        guard mapped.allSatisfy({ $0.element.table == alias }) else {
+            return .readOnly("Cells are read-only: the result uses \(table) more than once (a self-join).")
         }
         guard !schema.isEmpty else { return .readOnly("Cells are read-only: the server did not report the table's schema.") }
         guard isBaseTable else { return .readOnly("Cells are read-only: \(table) is not a base table.") }

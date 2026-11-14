@@ -124,7 +124,7 @@ public enum SQLStatementSplitter {
         }
         let afterKeyword = index + keyword.count
         guard units[afterKeyword] == 0x20 || units[afterKeyword] == 0x09 else { return nil }
-        let lineEnd = endOfLine(units, from: afterKeyword)
+        let lineEnd = endOfTextLine(units, from: afterKeyword)
         var tokenStart = afterKeyword
         while tokenStart < lineEnd, units[tokenStart] == 0x20 || units[tokenStart] == 0x09 { tokenStart += 1 }
         var tokenEnd = tokenStart
@@ -138,7 +138,15 @@ public enum SQLStatementSplitter {
         return true
     }
 
+    /// End of a line comment, as the server sees it (`\n` or NUL; `\r` does not end a comment).
     static func endOfLine(_ units: [UInt16], from index: Int) -> Int {
+        var index = index
+        while index < units.count, units[index] != 0x0A, units[index] != 0x00 { index += 1 }
+        return index
+    }
+
+    /// End of the current line for `DELIMITER` commands (`\r` and `\n`).
+    static func endOfTextLine(_ units: [UInt16], from index: Int) -> Int {
         var index = index
         while index < units.count, units[index] != 0x0A, units[index] != 0x0D { index += 1 }
         return index

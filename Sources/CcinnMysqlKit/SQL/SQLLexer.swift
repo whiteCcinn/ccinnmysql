@@ -138,9 +138,10 @@ public struct SQLLexer: Sendable {
         return last.kind == .identifier || last.kind == .quotedIdentifier
     }
 
+    /// Line comments end where the server ends them: at `\n` or a NUL byte (not at `\r`).
     private func endOfLine(from index: Int) -> Int {
         var index = index
-        while index < units.count, units[index] != 0x0A, units[index] != 0x0D { index += 1 }
+        while index < units.count, units[index] != 0x0A, units[index] != 0x00 { index += 1 }
         return index
     }
 
@@ -189,10 +190,11 @@ public struct SQLLexer: Sendable {
         return index
     }
 
-    /// `--` starts a comment only before whitespace, a control character or the end of input (`1--1` is arithmetic).
+    /// `--` starts a comment only before whitespace, a control character (incl. DEL) or the end of input, exactly as
+    /// the server's lexer decides (`1--1` is arithmetic).
     static func endsDashComment(_ unit: UInt16?) -> Bool {
         guard let unit else { return true }
-        return unit <= 0x20
+        return unit <= 0x20 || unit == 0x7F
     }
 
     static func isDigit(_ unit: UInt16) -> Bool { unit >= 0x30 && unit <= 0x39 }
