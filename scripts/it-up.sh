@@ -53,9 +53,10 @@ for target in "$@"; do
            --gtid-mode=ON --enforce-gtid-consistency=ON --read-only=ON ;;
     gr84) run gr84 13387 "$REGISTRY/mysql:8.4" MYSQL_ROOT_PASSWORD=$PASSWORD -- $SMALL_MYSQL --server-id=3 \
            --gtid-mode=ON --enforce-gtid-consistency=ON --plugin-load-add=group_replication.so \
-           --group-replication-group-name=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --group-replication-start-on-boot=OFF \
-           --group-replication-local-address=ccinnmysql-it-gr84:33061 --group-replication-group-seeds=ccinnmysql-it-gr84:33061 \
-           --group-replication-bootstrap-group=OFF ;;
+           --loose-group-replication-group-name=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --loose-group-replication-start-on-boot=OFF \
+           --loose-group-replication-local-address=ccinnmysql-it-gr84:33061 --loose-group-replication-group-seeds=ccinnmysql-it-gr84:33061 \
+           --loose-group-replication-bootstrap-group=OFF --loose-group-replication-message-cache-size=134217728 \
+           --innodb-buffer-pool-size=16M --performance-schema-max-table-instances=200 --max-connections=40 ;;
     m96) run m96 13396 "$REGISTRY/mysql:9.6" MYSQL_ROOT_PASSWORD=$PASSWORD -- $SMALL_MYSQL ;;
     mariadb106) run mariadb106 13316 "$REGISTRY/mariadb:10.6" MARIADB_ROOT_PASSWORD=$PASSWORD -- $SMALL_MARIADB ;;
     mariadb1011) run mariadb1011 13321 "$REGISTRY/mariadb:10.11" MARIADB_ROOT_PASSWORD=$PASSWORD -- $SMALL_MARIADB \
@@ -66,7 +67,15 @@ for target in "$@"; do
            --wsrep-on=ON --wsrep-provider=/usr/lib/galera/libgalera_smm.so --wsrep-cluster-address=gcomm:// \
            --wsrep-cluster-name=ccinn --binlog-format=ROW --innodb-autoinc-lock-mode=2 --wsrep-new-cluster ;;
     percona80) PLATFORM=linux/amd64 run percona80 13381 "$REGISTRY/percona:8.0" MYSQL_ROOT_PASSWORD=$PASSWORD -- $SMALL_MYSQL ;;
-    proxysql) run proxysql 13360 "${CCINNMYSQL_IT_PROXYSQL_IMAGE:-mirror.gcr.io/proxysql/proxysql:2.7.1}" -- ;;
+    proxysql)
+      # Needs m84 and its proxy_user (created by the topology tests); listens on 6033 inside the container.
+      name=ccinnmysql-it-proxysql
+      if ! docker ps -a --format '{{.Names}}' | grep -qx "$name"; then
+        docker run -d --name "$name" --network "$NETWORK" --memory "$MEMORY" -p 127.0.0.1:13360:6033 \
+          -v "$(cd "$(dirname "$0")" && pwd)/it/proxysql.cnf:/etc/proxysql.cnf:ro" \
+          "${CCINNMYSQL_IT_PROXYSQL_IMAGE:-mirror.gcr.io/proxysql/proxysql:2.7.1}" >/dev/null
+        echo "started $name on 127.0.0.1:13360"
+      fi ;;
     *) echo "unknown target $target" >&2; exit 64 ;;
   esac
 done

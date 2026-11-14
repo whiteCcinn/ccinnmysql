@@ -1,0 +1,25 @@
+# ProxySQL in front of ccinnmysql-it-m84 for integration tests (127.0.0.1:13360 → 6033).
+datadir="/var/lib/proxysql"
+admin_variables=
+{
+    admin_credentials="admin:admin"
+    mysql_ifaces="0.0.0.0:6032"
+}
+mysql_variables=
+{
+    threads=2
+    max_connections=200
+    interfaces="0.0.0.0:6033"
+    server_version="8.4.0"
+    monitor_username="proxy_user"
+    monitor_password="Proxy-pw-1"
+    default_query_timeout=3600000
+}
+mysql_servers=
+(
+    { address="ccinnmysql-it-m84", port=3306, hostgroup=0, max_connections=50 }
+)
+mysql_users=
+(
+    { username="proxy_user", password="Proxy-pw-1", default_hostgroup=0 }
+)
