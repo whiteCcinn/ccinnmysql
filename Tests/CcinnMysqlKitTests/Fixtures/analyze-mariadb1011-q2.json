@@ -1,0 +1,41 @@
+{
+  "query_optimization": {
+    "r_total_time_ms": 0.039857055
+  },
+  "query_block": {
+    "select_id": 1,
+    "r_loops": 1,
+    "r_total_time_ms": 0.32868478,
+    "nested_loop": [
+      {
+        "read_sorted_file": {
+          "r_rows": 10,
+          "filesort": {
+            "sort_key": "shop.orders.created_at",
+            "r_loops": 1,
+            "r_total_time_ms": 0.318940085,
+            "r_limit": 10,
+            "r_used_priority_queue": true,
+            "r_output_rows": 11,
+            "r_sort_mode": "sort_key,addon_fields",
+            "table": {
+              "table_name": "orders",
+              "access_type": "ALL",
+              "r_loops": 1,
+              "rows": 2000,
+              "r_rows": 2000,
+              "r_table_time_ms": 0.172978782,
+              "r_other_time_ms": 0.138809617,
+              "r_engine_stats": {
+                "pages_accessed": 8
+              },
+              "filtered": 100,
+              "r_filtered": 88.15,
+              "attached_condition": "shop.orders.amount > 100"
+            }
+          }
+        }
+      }
+    ]
+  }
+}

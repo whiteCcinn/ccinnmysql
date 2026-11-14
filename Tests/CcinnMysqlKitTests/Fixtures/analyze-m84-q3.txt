@@ -1,0 +1,10 @@
+-> Table scan on <union temporary>  (cost=133567..141904 rows=666800) (actual time=12.1..12.1 rows=200 loops=1)
+    -> Union materialize with deduplication  (cost=133567..133567 rows=666800) (actual time=12.1..12.1 rows=200 loops=1)
+        -> Nested loop inner join  (cost=66862 rows=666600) (actual time=8.25..8.25 rows=0 loops=1)
+            -> Table scan on customers  (cost=102 rows=1000) (actual time=1.41..1.64 rows=1000 loops=1)
+            -> Single-row index lookup on <subquery2> using <auto_distinct_key> (customer_id=shop.customers.id)  (cost=269..269 rows=1) (actual time=0.00651..0.00651 rows=0 loops=1000)
+                -> Materialize with deduplication  (cost=269..269 rows=667) (actual time=6.33..6.33 rows=0 loops=1)
+                    -> Filter: (shop.orders.amount > 400.00)  (cost=202 rows=667) (actual time=4.65..4.65 rows=0 loops=1)
+                        -> Table scan on orders  (cost=202 rows=2000) (actual time=0.0705..0.287 rows=2000 loops=1)
+        -> Index lookup on customers using idx_city (city='Penang')  (cost=25.2 rows=200) (actual time=0.706..0.833 rows=200 loops=1)
+

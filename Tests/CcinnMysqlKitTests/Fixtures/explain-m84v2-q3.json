@@ -1,0 +1,122 @@
+{
+  "query": "/* select#1 */ select `shop`.`customers`.`id` AS `id`,`shop`.`customers`.`email` AS `email`,`shop`.`customers`.`name` AS `name`,`shop`.`customers`.`city` AS `city`,`shop`.`customers`.`created_at` AS `created_at` from `shop`.`customers` semi join (`shop`.`orders`) where ((`<subquery2>`.`customer_id` = `shop`.`customers`.`id`) and (`shop`.`orders`.`amount` > 400.00)) union /* select#3 */ select `shop`.`customers`.`id` AS `id`,`shop`.`customers`.`email` AS `email`,`shop`.`customers`.`name` AS `name`,`shop`.`customers`.`city` AS `city`,`shop`.`customers`.`created_at` AS `created_at` from `shop`.`customers` where (`shop`.`customers`.`city` = 'Penang')",
+  "inputs": [
+    {
+      "union": true,
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "operation": "Table scan on customers",
+              "table_name": "customers",
+              "access_type": "table",
+              "schema_name": "shop",
+              "used_columns": [
+                "id",
+                "email",
+                "name",
+                "city",
+                "created_at"
+              ],
+              "estimated_rows": 1000.0,
+              "estimated_total_cost": 101.75
+            },
+            {
+              "inputs": [
+                {
+                  "inputs": [
+                    {
+                      "inputs": [
+                        {
+                          "operation": "Table scan on orders",
+                          "table_name": "orders",
+                          "access_type": "table",
+                          "schema_name": "shop",
+                          "used_columns": [
+                            "customer_id",
+                            "amount"
+                          ],
+                          "estimated_rows": 2000.0,
+                          "estimated_total_cost": 202.0
+                        }
+                      ],
+                      "condition": "(shop.orders.amount > 400.00)",
+                      "operation": "Filter: (shop.orders.amount > 400.00)",
+                      "access_type": "filter",
+                      "estimated_rows": 666.5999889373779,
+                      "estimated_total_cost": 202.0
+                    }
+                  ],
+                  "operation": "Materialize with deduplication",
+                  "access_type": "materialize",
+                  "deduplication": true,
+                  "estimated_rows": 666.5999889373779,
+                  "estimated_total_cost": 268.6599988937378,
+                  "estimated_first_row_cost": 268.6599988937378
+                }
+              ],
+              "covering": false,
+              "operation": "Single-row index lookup on <subquery2> using <auto_distinct_key> (customer_id=shop.customers.id)",
+              "index_name": "<auto_distinct_key>",
+              "table_name": "<subquery2>",
+              "access_type": "index",
+              "used_columns": [
+                "customer_id"
+              ],
+              "estimated_rows": 1.0,
+              "lookup_condition": "customer_id=shop.customers.id",
+              "index_access_type": "index_lookup",
+              "estimated_total_cost": 268.8101639127315,
+              "estimated_first_row_cost": 268.8101639127315
+            }
+          ],
+          "join_type": "inner join",
+          "operation": "Nested loop inner join",
+          "access_type": "join",
+          "estimated_rows": 666599.9889373779,
+          "join_algorithm": "nested_loop",
+          "estimated_total_cost": 66861.7488937378
+        },
+        {
+          "covering": false,
+          "operation": "Index lookup on customers using idx_city (city='Penang')",
+          "index_name": "idx_city",
+          "table_name": "customers",
+          "access_type": "index",
+          "schema_name": "shop",
+          "used_columns": [
+            "id",
+            "email",
+            "name",
+            "city",
+            "created_at"
+          ],
+          "estimated_rows": 200.0,
+          "lookup_condition": "city='Penang'",
+          "index_access_type": "index_lookup",
+          "estimated_total_cost": 25.25
+        }
+      ],
+      "operation": "Union materialize with deduplication",
+      "access_type": "materialize",
+      "deduplication": true,
+      "estimated_rows": 666799.9889373779,
+      "estimated_total_cost": 133566.9977874756,
+      "estimated_first_row_cost": 133566.9977874756
+    }
+  ],
+  "operation": "Table scan on <union temporary>",
+  "query_type": "select",
+  "table_name": "<union temporary>",
+  "access_type": "table",
+  "used_columns": [
+    "id",
+    "email",
+    "name",
+    "city",
+    "created_at"
+  ],
+  "estimated_rows": 666799.9889373779,
+  "estimated_total_cost": 141904.48528747557,
+  "estimated_first_row_cost": 133567.0102912063
+}

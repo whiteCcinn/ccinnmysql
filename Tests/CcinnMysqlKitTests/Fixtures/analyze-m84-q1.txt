@@ -1,0 +1,7 @@
+-> Sort: n DESC  (actual time=12.2..12.2 rows=5 loops=1)
+    -> Table scan on <temporary>  (actual time=9.99..9.99 rows=5 loops=1)
+        -> Aggregate using temporary table  (actual time=9.99..9.99 rows=5 loops=1)
+            -> Nested loop inner join  (cost=236 rows=510) (actual time=6.12..7.4 rows=510 loops=1)
+                -> Index lookup on o using idx_status (status='paid'), with index condition: (o.`status` = 'paid')  (cost=57 rows=510) (actual time=5.87..6.56 rows=510 loops=1)
+                -> Single-row index lookup on c using PRIMARY (id=o.customer_id)  (cost=0.25 rows=1) (actual time=0.00154..0.00155 rows=1 loops=510)
+

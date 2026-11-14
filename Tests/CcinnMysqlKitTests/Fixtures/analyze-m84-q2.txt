@@ -1,0 +1,5 @@
+-> Limit: 10 row(s)  (cost=202 rows=10) (actual time=0.726..0.727 rows=10 loops=1)
+    -> Sort: shop.orders.created_at, limit input to 10 row(s) per chunk  (cost=202 rows=2000) (actual time=0.726..0.726 rows=10 loops=1)
+        -> Filter: (shop.orders.amount > 100.00)  (cost=202 rows=2000) (actual time=0.155..0.532 rows=1763 loops=1)
+            -> Table scan on orders  (cost=202 rows=2000) (actual time=0.122..0.4 rows=2000 loops=1)
+

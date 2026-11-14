@@ -1,0 +1,49 @@
+{
+  "limit": 10,
+  "query": "/* select#1 */ select `shop`.`orders`.`id` AS `id`,`shop`.`orders`.`customer_id` AS `customer_id`,`shop`.`orders`.`status` AS `status`,`shop`.`orders`.`channel` AS `channel`,`shop`.`orders`.`amount` AS `amount`,`shop`.`orders`.`created_at` AS `created_at` from `shop`.`orders` where (`shop`.`orders`.`amount` > 100.00) order by `shop`.`orders`.`created_at` limit 10",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "operation": "Table scan on orders",
+              "table_name": "orders",
+              "access_type": "table",
+              "schema_name": "shop",
+              "used_columns": [
+                "id",
+                "customer_id",
+                "status",
+                "channel",
+                "amount",
+                "created_at"
+              ],
+              "estimated_rows": 2000.0,
+              "estimated_total_cost": 202.0
+            }
+          ],
+          "condition": "(shop.orders.amount > 100.00)",
+          "operation": "Filter: (shop.orders.amount > 100.00)",
+          "access_type": "filter",
+          "estimated_rows": 2000.0,
+          "estimated_total_cost": 202.0
+        }
+      ],
+      "operation": "Sort: shop.orders.created_at, limit input to 10 row(s) per chunk",
+      "access_type": "sort",
+      "sort_fields": [
+        "shop.orders.created_at"
+      ],
+      "estimated_rows": 2000.0,
+      "per_chunk_limit": 10,
+      "estimated_total_cost": 202.0
+    }
+  ],
+  "operation": "Limit: 10 row(s)",
+  "query_type": "select",
+  "access_type": "limit",
+  "limit_offset": 0,
+  "estimated_rows": 10.0,
+  "estimated_total_cost": 202.0
+}

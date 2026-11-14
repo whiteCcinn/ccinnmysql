@@ -1,0 +1,71 @@
+{
+  "query": "/* select#1 */ select `c`.`city` AS `city`,count(0) AS `n`,sum(`o`.`amount`) AS `SUM(o.amount)` from `shop`.`orders` `o` join `shop`.`customers` `c` where ((`c`.`id` = `o`.`customer_id`) and (`o`.`status` = 'paid')) group by `c`.`city` order by `n` desc",
+  "inputs": [
+    {
+      "inputs": [
+        {
+          "inputs": [
+            {
+              "inputs": [
+                {
+                  "alias": "o",
+                  "covering": false,
+                  "operation": "Index lookup on o using idx_status (status='paid'), with index condition: (o.`status` = 'paid')",
+                  "index_name": "idx_status",
+                  "table_name": "orders",
+                  "access_type": "index",
+                  "schema_name": "shop",
+                  "used_columns": [
+                    "id",
+                    "customer_id",
+                    "status",
+                    "amount"
+                  ],
+                  "estimated_rows": 510.0,
+                  "lookup_condition": "status='paid'",
+                  "index_access_type": "index_lookup",
+                  "estimated_total_cost": 57.0,
+                  "pushed_index_condition": "(o.`status` = 'paid')"
+                },
+                {
+                  "alias": "c",
+                  "covering": false,
+                  "operation": "Single-row index lookup on c using PRIMARY (id=o.customer_id)",
+                  "index_name": "PRIMARY",
+                  "table_name": "customers",
+                  "access_type": "index",
+                  "schema_name": "shop",
+                  "used_columns": [
+                    "id",
+                    "city"
+                  ],
+                  "estimated_rows": 1.0,
+                  "lookup_condition": "id=o.customer_id",
+                  "index_access_type": "index_lookup",
+                  "estimated_total_cost": 0.25019607843137254
+                }
+              ],
+              "join_type": "inner join",
+              "operation": "Nested loop inner join",
+              "access_type": "join",
+              "estimated_rows": 510.0,
+              "join_algorithm": "nested_loop",
+              "estimated_total_cost": 235.5
+            }
+          ],
+          "operation": "Aggregate using temporary table",
+          "access_type": "temp_table_aggregate"
+        }
+      ],
+      "operation": "Table scan on <temporary>",
+      "table_name": "<temporary>",
+      "access_type": "table"
+    }
+  ],
+  "operation": "Sort: n DESC",
+  "query_type": "select",
+  "access_type": "sort",
+  "sort_fields": [
+    "n DESC"
+  ]
+}

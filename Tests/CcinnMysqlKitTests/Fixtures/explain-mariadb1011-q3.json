@@ -1,0 +1,78 @@
+{
+  "query_block": {
+    "union_result": {
+      "table_name": "<union1,3>",
+      "access_type": "ALL",
+      "query_specifications": [
+        {
+          "query_block": {
+            "select_id": 1,
+            "nested_loop": [
+              {
+                "table": {
+                  "table_name": "customers",
+                  "access_type": "ALL",
+                  "possible_keys": ["PRIMARY"],
+                  "rows": 1000,
+                  "filtered": 100
+                }
+              },
+              {
+                "table": {
+                  "table_name": "<subquery2>",
+                  "access_type": "eq_ref",
+                  "possible_keys": ["distinct_key"],
+                  "key": "distinct_key",
+                  "key_length": "4",
+                  "used_key_parts": ["customer_id"],
+                  "ref": ["func"],
+                  "rows": 1,
+                  "filtered": 100,
+                  "materialized": {
+                    "unique": 1,
+                    "query_block": {
+                      "select_id": 2,
+                      "nested_loop": [
+                        {
+                          "table": {
+                            "table_name": "orders",
+                            "access_type": "ALL",
+                            "possible_keys": [
+                              "idx_customer",
+                              "idx_customer_created"
+                            ],
+                            "rows": 2000,
+                            "filtered": 100,
+                            "attached_condition": "shop.orders.amount > 400"
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "query_block": {
+            "select_id": 3,
+            "operation": "UNION",
+            "nested_loop": [
+              {
+                "table": {
+                  "table_name": "customers",
+                  "access_type": "ALL",
+                  "possible_keys": ["idx_city"],
+                  "rows": 1000,
+                  "filtered": 20,
+                  "attached_condition": "shop.customers.city = 'Penang'"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

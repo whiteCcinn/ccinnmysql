@@ -1,0 +1,129 @@
+{
+  "query_block": {
+    "union_result": {
+      "using_temporary_table": true,
+      "table_name": "<union1,3>",
+      "access_type": "ALL",
+      "query_specifications": [
+        {
+          "dependent": false,
+          "cacheable": true,
+          "query_block": {
+            "select_id": 1,
+            "cost_info": {
+              "query_cost": "950.32"
+            },
+            "nested_loop": [
+              {
+                "table": {
+                  "table_name": "customers",
+                  "access_type": "ALL",
+                  "possible_keys": [
+                    "PRIMARY"
+                  ],
+                  "rows_examined_per_scan": 1000,
+                  "rows_produced_per_join": 1000,
+                  "filtered": "100.00",
+                  "cost_info": {
+                    "read_cost": "7.00",
+                    "eval_cost": "200.00",
+                    "prefix_cost": "207.00",
+                    "data_read_per_join": "1M"
+                  },
+                  "used_columns": [
+                    "id",
+                    "email",
+                    "name",
+                    "city",
+                    "created_at"
+                  ],
+                  "attached_condition": "(`shop`.`customers`.`id` is not null)"
+                }
+              },
+              {
+                "table": {
+                  "table_name": "<subquery2>",
+                  "access_type": "eq_ref",
+                  "key": "<auto_key>",
+                  "key_length": "4",
+                  "ref": [
+                    "shop.customers.id"
+                  ],
+                  "rows_examined_per_scan": 1,
+                  "materialized_from_subquery": {
+                    "using_temporary_table": true,
+                    "query_block": {
+                      "table": {
+                        "table_name": "orders",
+                        "access_type": "ALL",
+                        "possible_keys": [
+                          "idx_customer",
+                          "idx_customer_created"
+                        ],
+                        "rows_examined_per_scan": 2000,
+                        "rows_produced_per_join": 666,
+                        "filtered": "33.33",
+                        "cost_info": {
+                          "read_cost": "274.68",
+                          "eval_cost": "133.32",
+                          "prefix_cost": "408.00",
+                          "data_read_per_join": "72K"
+                        },
+                        "used_columns": [
+                          "customer_id",
+                          "amount"
+                        ],
+                        "attached_condition": "(`shop`.`orders`.`amount` > 400)"
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "dependent": false,
+          "cacheable": true,
+          "query_block": {
+            "select_id": 3,
+            "cost_info": {
+              "query_cost": "61.00"
+            },
+            "table": {
+              "table_name": "customers",
+              "access_type": "ref",
+              "possible_keys": [
+                "idx_city"
+              ],
+              "key": "idx_city",
+              "used_key_parts": [
+                "city"
+              ],
+              "key_length": "242",
+              "ref": [
+                "const"
+              ],
+              "rows_examined_per_scan": 200,
+              "rows_produced_per_join": 200,
+              "filtered": "100.00",
+              "cost_info": {
+                "read_cost": "21.00",
+                "eval_cost": "40.00",
+                "prefix_cost": "61.00",
+                "data_read_per_join": "276K"
+              },
+              "used_columns": [
+                "id",
+                "email",
+                "name",
+                "city",
+                "created_at"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

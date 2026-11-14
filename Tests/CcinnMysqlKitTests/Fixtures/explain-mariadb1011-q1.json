@@ -1,0 +1,39 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "filesort": {
+      "sort_key": "count(0) desc",
+      "temporary_table": {
+        "nested_loop": [
+          {
+            "table": {
+              "table_name": "o",
+              "access_type": "ALL",
+              "possible_keys": [
+                "idx_customer",
+                "idx_customer_created",
+                "idx_status"
+              ],
+              "rows": 2000,
+              "filtered": 25.5,
+              "attached_condition": "shop.o.`status` = 'paid'"
+            }
+          },
+          {
+            "table": {
+              "table_name": "c",
+              "access_type": "eq_ref",
+              "possible_keys": ["PRIMARY"],
+              "key": "PRIMARY",
+              "key_length": "4",
+              "used_key_parts": ["id"],
+              "ref": ["shop.o.customer_id"],
+              "rows": 1,
+              "filtered": 100
+            }
+          }
+        ]
+      }
+    }
+  }
+}

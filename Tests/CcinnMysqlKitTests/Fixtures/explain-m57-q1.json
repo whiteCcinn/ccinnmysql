@@ -1,0 +1,82 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "738.00"
+    },
+    "ordering_operation": {
+      "using_filesort": true,
+      "grouping_operation": {
+        "using_temporary_table": true,
+        "using_filesort": false,
+        "nested_loop": [
+          {
+            "table": {
+              "table_name": "o",
+              "access_type": "ref",
+              "possible_keys": [
+                "idx_customer",
+                "idx_customer_created",
+                "idx_status"
+              ],
+              "key": "idx_status",
+              "used_key_parts": [
+                "status"
+              ],
+              "key_length": "1",
+              "ref": [
+                "const"
+              ],
+              "rows_examined_per_scan": 510,
+              "rows_produced_per_join": 510,
+              "filtered": "100.00",
+              "cost_info": {
+                "read_cost": "24.00",
+                "eval_cost": "102.00",
+                "prefix_cost": "126.00",
+                "data_read_per_join": "55K"
+              },
+              "used_columns": [
+                "id",
+                "customer_id",
+                "status",
+                "amount"
+              ]
+            }
+          },
+          {
+            "table": {
+              "table_name": "c",
+              "access_type": "eq_ref",
+              "possible_keys": [
+                "PRIMARY",
+                "idx_city"
+              ],
+              "key": "PRIMARY",
+              "used_key_parts": [
+                "id"
+              ],
+              "key_length": "4",
+              "ref": [
+                "shop.o.customer_id"
+              ],
+              "rows_examined_per_scan": 1,
+              "rows_produced_per_join": 510,
+              "filtered": "100.00",
+              "cost_info": {
+                "read_cost": "510.00",
+                "eval_cost": "102.00",
+                "prefix_cost": "738.00",
+                "data_read_per_join": "705K"
+              },
+              "used_columns": [
+                "id",
+                "city"
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}
