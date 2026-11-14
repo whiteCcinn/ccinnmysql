@@ -81,10 +81,14 @@ public enum TLSTrust {
     }
 
     /// `nil` when the trust is acceptable for `options`, otherwise the reason it is not.
+    ///
+    /// Chains are validated with the basic X.509 policy (signatures, validity, CA constraints) like the
+    /// `mysql` client does, not with Apple's TLS server policy: that policy also demands SANs, serverAuth EKUs
+    /// and short lifetimes, which the certificates MySQL and MariaDB generate never have. The host name is
+    /// then checked against the SAN DNS/IP entries, or the common name when the certificate has no SANs.
     public static func evaluate(_ trust: SecTrust, options: TLSOptions) -> String? {
         guard options.mode.verifiesCertificate else { return nil }
-        let hostName: CFString? = options.mode == .verifyIdentity ? options.serverName as CFString : nil
-        SecTrustSetPolicies(trust, SecPolicyCreateSSL(true, hostName))
+        SecTrustSetPolicies(trust, SecPolicyCreateBasicX509())
         if !options.caCertificates.isEmpty {
             do {
                 let anchors = try options.caCertificates.flatMap { try certificates(from: $0) }
@@ -95,8 +99,40 @@ public enum TLSTrust {
             }
         }
         var error: CFError?
-        if SecTrustEvaluateWithError(trust, &error) { return nil }
-        return error.map { CFErrorCopyDescription($0) as String } ?? "The server certificate is not trusted"
+        guard SecTrustEvaluateWithError(trust, &error) else {
+            return error.map { CFErrorCopyDescription($0) as String } ?? "The server certificate is not trusted"
+        }
+        guard options.mode == .verifyIdentity else { return nil }
+        guard let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate], let leaf = chain.first else {
+            return "The server sent no certificate"
+        }
+        let names = subjectNames(of: leaf)
+        let host = options.serverName.trimmingCharacters(in: .whitespaces)
+        if HostnameMatcher.matches(host: host, names: names) { return nil }
+        let shown = (names.dns + names.ip).prefix(5).joined(separator: ", ")
+        return "The certificate is for \(shown.isEmpty ? (names.commonName ?? "an unnamed host") : shown), not \(host)"
+    }
+
+    /// DNS and IP subject alternative names plus the common name of a certificate.
+    static func subjectNames(of certificate: SecCertificate) -> HostnameMatcher.Names {
+        var dns: [String] = []
+        var ip: [String] = []
+        let keys = [kSecOIDSubjectAltName] as CFArray
+        if let values = SecCertificateCopyValues(certificate, keys, nil) as? [String: Any],
+           let san = values[kSecOIDSubjectAltName as String] as? [String: Any],
+           let entries = san[kSecPropertyKeyValue as String] as? [[String: Any]] {
+            for entry in entries.prefix(256) {
+                guard let label = entry[kSecPropertyKeyLabel as String] as? String else { continue }
+                let value = entry[kSecPropertyKeyValue as String]
+                if label == "DNS Name", let name = value as? String { dns.append(name) }
+                if label == "IP Address" {
+                    if let address = value as? String { ip.append(address) } else if let data = value as? Data { ip.append(HostnameMatcher.format(ip: [UInt8](data))) }
+                }
+            }
+        }
+        var commonName: CFString?
+        SecCertificateCopyCommonName(certificate, &commonName)
+        return HostnameMatcher.Names(dns: dns, ip: ip, commonName: commonName as String?)
     }
 
     /// Identity from PKCS#12 data.
@@ -113,5 +149,60 @@ public enum TLSTrust {
             throw MySQLError(.tls, "The client certificate file does not contain an identity")
         }
         return unsafeDowncast(object, to: SecIdentity.self)
+    }
+}
+
+/// RFC 6125-style host name matching (wildcards only as the whole left-most label).
+public enum HostnameMatcher {
+    public struct Names: Sendable, Equatable {
+        public var dns: [String]
+        public var ip: [String]
+        public var commonName: String?
+
+        public init(dns: [String] = [], ip: [String] = [], commonName: String? = nil) {
+            self.dns = dns
+            self.ip = ip
+            self.commonName = commonName
+        }
+    }
+
+    public static func matches(host rawHost: String, names: Names) -> Bool {
+        let host = rawHost.trimmingCharacters(in: CharacterSet(charactersIn: "[] ")).lowercased()
+        guard !host.isEmpty else { return false }
+        if isIPAddress(host) {
+            return names.ip.contains { $0.lowercased() == host } || (names.ip.isEmpty && names.dns.isEmpty && names.commonName?.lowercased() == host)
+        }
+        if !names.dns.isEmpty { return names.dns.contains { matches(host: host, pattern: $0) } }
+        guard names.ip.isEmpty, let commonName = names.commonName else { return false }
+        return matches(host: host, pattern: commonName)
+    }
+
+    static func matches(host: String, pattern rawPattern: String) -> Bool {
+        let pattern = rawPattern.lowercased().trimmingCharacters(in: .whitespaces)
+        guard !pattern.isEmpty else { return false }
+        let hostLabels = host.split(separator: ".", omittingEmptySubsequences: false)
+        let patternLabels = pattern.split(separator: ".", omittingEmptySubsequences: false)
+        guard hostLabels.count == patternLabels.count else { return false }
+        for (index, (hostLabel, patternLabel)) in zip(hostLabels, patternLabels).enumerated() {
+            if index == 0, patternLabel == "*", patternLabels.count >= 3 { continue }
+            if hostLabel != patternLabel { return false }
+        }
+        return true
+    }
+
+    static func isIPAddress(_ host: String) -> Bool {
+        var ipv4 = in_addr()
+        var ipv6 = in6_addr()
+        return inet_pton(AF_INET, host, &ipv4) == 1 || inet_pton(AF_INET6, host, &ipv6) == 1
+    }
+
+    static func format(ip bytes: [UInt8]) -> String {
+        if bytes.count == 4 { return bytes.map(String.init).joined(separator: ".") }
+        guard bytes.count == 16 else { return "" }
+        var address = in6_addr()
+        withUnsafeMutableBytes(of: &address) { $0.copyBytes(from: bytes) }
+        var buffer = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
+        guard inet_ntop(AF_INET6, &address, &buffer, socklen_t(buffer.count)) != nil else { return "" }
+        return String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
     }
 }

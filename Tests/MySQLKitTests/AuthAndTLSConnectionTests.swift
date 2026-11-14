@@ -297,3 +297,26 @@ final class Attempts: Sendable {
         }
     }
 }
+
+@Suite("Certificate host names")
+struct HostnameMatcherTests {
+    @Test func dnsNamesAndWildcards() {
+        let names = HostnameMatcher.Names(dns: ["db.example.com", "*.replicas.example.com"], commonName: "ignored.example.com")
+        #expect(HostnameMatcher.matches(host: "db.example.com", names: names))
+        #expect(HostnameMatcher.matches(host: "DB.Example.COM", names: names))
+        #expect(HostnameMatcher.matches(host: "r1.replicas.example.com", names: names))
+        #expect(!HostnameMatcher.matches(host: "a.b.replicas.example.com", names: names), "wildcards cover one label")
+        #expect(!HostnameMatcher.matches(host: "ignored.example.com", names: names), "CN is ignored when SANs exist")
+        #expect(!HostnameMatcher.matches(host: "example.com", names: HostnameMatcher.Names(dns: ["*.com"])), "no wildcard TLDs")
+    }
+
+    @Test func commonNameFallbackAndIPAddresses() {
+        #expect(HostnameMatcher.matches(host: "mysql.local", names: HostnameMatcher.Names(commonName: "mysql.local")))
+        #expect(!HostnameMatcher.matches(host: "127.0.0.1", names: HostnameMatcher.Names(commonName: "MySQL_Server_8.4.13_Auto_Generated_Server_Certificate")))
+        #expect(HostnameMatcher.matches(host: "10.0.0.5", names: HostnameMatcher.Names(dns: ["db"], ip: ["10.0.0.5"])))
+        #expect(!HostnameMatcher.matches(host: "10.0.0.6", names: HostnameMatcher.Names(ip: ["10.0.0.5"])))
+        #expect(HostnameMatcher.matches(host: "[::1]", names: HostnameMatcher.Names(ip: ["::1"])))
+        #expect(HostnameMatcher.format(ip: [10, 0, 0, 5]) == "10.0.0.5")
+        #expect(!HostnameMatcher.matches(host: "", names: HostnameMatcher.Names(dns: [""])))
+    }
+}
