@@ -321,7 +321,7 @@ struct ConnectionEditorView: View {
             Circle()
                 .fill(Theme.color(for: draft.color).gradient)
                 .frame(width: 34, height: 34)
-                .overlay(Image(systemName: "sparkle").foregroundStyle(.white).font(.system(size: 15, weight: .semibold)))
+                .overlay(Image(systemName: "cylinder.split.1x2.fill").foregroundStyle(.white).font(.system(size: 15, weight: .semibold)))
             VStack(alignment: .leading, spacing: 4) {
                 TextField("Connection name", text: $draft.name, prompt: Text(draft.host.isEmpty ? "Untitled connection" : draft.host))
                     .textFieldStyle(.plain)
