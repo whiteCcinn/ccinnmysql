@@ -14,6 +14,11 @@ public actor SQLSession {
     private var runGeneration: UInt64 = 0
     private var cancelledGeneration: UInt64?
     private var isBusy = false
+    /// The statement on the wire: its generation and connection (set together with `runningTarget`).
+    private var runningStatement: (generation: UInt64, connection: MySQLConnection)?
+    /// Stop was pressed while the current run had not reached the server yet (waiting for an earlier kill
+    /// or reconnecting). The run then stops before sending its statement instead of ignoring the request.
+    private var cancelRequestedBeforeStart = false
     /// A `KILL QUERY` still on its way; the next statement waits for it so it cannot be hit by a late kill.
     private var pendingKill: Task<Void, Never>?
     /// The server reported an open transaction after the last statement.
@@ -34,6 +39,7 @@ public actor SQLSession {
         // One statement at a time; a rejected second run must not touch the running one's state.
         guard !isBusy else { throw MySQLError(.busy, "This editor is already running a statement") }
         isBusy = true
+        cancelRequestedBeforeStart = false
         defer { isBusy = false }
         return try await execute(sql, limits: limits)
     }
@@ -48,8 +54,16 @@ public actor SQLSession {
         runGeneration &+= 1
         let generation = runGeneration
         let target = await connection.killTarget
+        // No suspension between this check and `runningStatement`: a cancel either sees the flag or the statement.
+        if cancelRequestedBeforeStart { throw MySQLError.cancelled() }
         runningTarget = target
-        defer { if runGeneration == generation { runningTarget = nil } }
+        runningStatement = (generation, connection)
+        defer {
+            if runGeneration == generation {
+                runningTarget = nil
+                runningStatement = nil
+            }
+        }
         do {
             let results = try await connection.query(sql, limits: limits)
             if await connection.isBroken {
@@ -78,9 +92,19 @@ public actor SQLSession {
     /// Asks the server to stop the running statement (`KILL QUERY`). If that statement is still
     /// running after `graceSeconds`, its socket is closed.
     public func cancel(graceSeconds: Double = 5) async {
-        guard let target = runningTarget, let connection else { return }
-        let generation = runGeneration
+        guard isBusy else { return }
+        guard let (generation, connection) = runningStatement else {
+            // The statement has not reached the server yet: stop it before it is sent.
+            cancelRequestedBeforeStart = true
+            return
+        }
         cancelledGeneration = generation
+        guard let target = runningTarget else {
+            // The server could not be identified, so no KILL may be sent (it could hit another server's
+            // thread): closing the socket stops the statement.
+            if self.connection === connection { connection.forceClose() }
+            return
+        }
         let client = client
         let kill = Task { () -> Bool in
             do {

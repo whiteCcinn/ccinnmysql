@@ -26,6 +26,27 @@ struct SessionRegressionTests {
         await client.close()
     }
 
+    /// Stop pressed while the editor is still connecting used to be ignored (`runningTarget` was not set yet),
+    /// so the statement ran anyway; on a slow CI runner this hung the tests that cancel early.
+    @Test func cancelWhileConnectingStopsTheRunBeforeItIsSent() async throws {
+        // Connection 1 is the session's own connection: its connect takes 1 s.
+        let cluster = FakeCluster(connectDelays: [1: 1.0]) { sql in sql.contains("long") ? .hang : .packets(FakeCluster.rows("ok")) }
+        let client = try await connect(cluster)
+        let session = client.openSession()
+        let long = Task { try await session.run("SELECT 'long'") }
+        try await Task.sleep(for: .milliseconds(100))
+        let started = ContinuousClock.now
+        await session.cancel(graceSeconds: 0.2)
+        await #expect { _ = try await long.value } throws: { ($0 as? MySQLError)?.kind == .cancelled }
+        #expect(ContinuousClock.now - started < .seconds(3))
+        #expect(!cluster.statements.contains { $0.contains("long") }, "the cancelled statement never reached the server")
+        #expect(cluster.kills.isEmpty)
+        // The request applied to that run only: the next statement runs normally.
+        #expect(try await session.run("SELECT 'next'").last?.scalar == "ok")
+        await session.close()
+        await client.close()
+    }
+
     @Test func lateCancelDoesNotCloseTheNextRun() async throws {
         let cluster = FakeCluster { sql in
             if sql.contains("first") { return .hang }
