@@ -180,7 +180,9 @@ struct ConnectionTests {
         await #expect {
             _ = try await MySQLConnection.connect(config) { _, _ in silent }
         } throws: { ($0 as? MySQLError)?.kind == .timeout }
-        #expect(ContinuousClock.now - started < .seconds(3))
+        // The 1 s deadline fired instead of the connect hanging. Generous bound: wall-clock time on a busy CI
+        // runner includes waiting for a thread while other tests run.
+        #expect(ContinuousClock.now - started < .seconds(15))
     }
 }
 
