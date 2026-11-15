@@ -84,7 +84,7 @@ TLS is negotiated on the same socket after the server greeting (`SSLRequest`), l
 | **Server overview** | **Replica status** |
 | ![Server](docs/screenshots/server-overview-mysql84.png) | ![Replication](docs/screenshots/replication-mysql84.png) |
 | **Charts from a query (MariaDB)** | **Connection with TLS options** |
-| ![Chart](docs/screenshots/chart-mariadb1011.png) | ![Connection](docs/screenshots/connection-tls.png) |
+| ![Chart](docs/screenshots/chart-mariadb114.png) | ![Connection](docs/screenshots/connection-tls.png) |
 
 ## Installation
 

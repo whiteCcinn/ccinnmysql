@@ -69,7 +69,7 @@ struct ConnectionsView: View {
             .listStyle(.sidebar)
             .overlay {
                 if store.profiles.isEmpty {
-                    ContentUnavailableView("No Saved Connections", systemImage: "sparkle", description: Text("Create a connection to get started."))
+                    ContentUnavailableView("No Saved Connections", systemImage: "cylinder.split.1x2", description: Text("Create a connection to get started."))
                 }
             }
             Button {

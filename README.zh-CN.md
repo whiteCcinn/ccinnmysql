@@ -84,7 +84,7 @@ TLS 与 `mysql` 客户端一样，在服务器握手包之后通过 `SSLRequest`
 | **服务器概览** | **从库状态** |
 | ![Server](docs/screenshots/server-overview-mysql84.png) | ![Replication](docs/screenshots/replication-mysql84.png) |
 | **由查询生成的图表（MariaDB）** | **带 TLS 选项的连接** |
-| ![Chart](docs/screenshots/chart-mariadb1011.png) | ![Connection](docs/screenshots/connection-tls.png) |
+| ![Chart](docs/screenshots/chart-mariadb114.png) | ![Connection](docs/screenshots/connection-tls.png) |
 
 ## 安装
 
