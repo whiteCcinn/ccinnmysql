@@ -206,13 +206,21 @@ struct KillPinningTests {
         return try await MySQLClient.connect(configuration, poolSize: poolSize, transportFactory: cluster.transportFactory)
     }
 
+    /// Waits (up to 5 s) until the session reports its running statement. A fixed sleep is flaky on slow CI runners.
+    private func runningTarget(of session: SQLSession) async throws -> KillTarget {
+        for _ in 0..<500 {
+            if let target = await session.runningTarget { return target }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        return try #require(await session.runningTarget)
+    }
+
     @Test func cancelBehindALoadBalancerKillsOnTheRightBackend() async throws {
         let cluster = FakeCluster(backends: 3) { sql in sql.contains("long") ? .hang : .packets(FakeCluster.rows("ok")) }
         let client = try await connect(cluster)
         let session = client.openSession()
         let long = Task { try await session.run("SELECT 'long'") }
-        try await Task.sleep(for: .milliseconds(150))
-        let target = try #require(await session.runningTarget)
+        let target = try await runningTarget(of: session)
         await session.cancel(graceSeconds: 2)
         await #expect { _ = try await long.value } throws: { ($0 as? MySQLError)?.kind == .cancelled }
         let kills = cluster.kills
@@ -229,8 +237,7 @@ struct KillPinningTests {
         #expect(client.serverInfo.isProxySQL)
         let session = client.openSession()
         let long = Task { try await session.run("SELECT 'long'") }
-        try await Task.sleep(for: .milliseconds(150))
-        let target = try #require(await session.runningTarget)
+        let target = try await runningTarget(of: session)
         #expect(target.threadID != UInt64(target.proxySessionID ?? 0))
         await session.cancel(graceSeconds: 2)
         await #expect { _ = try await long.value } throws: { ($0 as? MySQLError)?.kind == .cancelled }

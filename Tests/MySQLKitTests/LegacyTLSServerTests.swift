@@ -7,8 +7,7 @@ import Testing
 @Suite("TLS 1.0-only servers", .enabled(if: LegacyTLSServer.isAvailable), .serialized)
 struct LegacyTLSServerTests {
     @Test func withoutTheLegacyToggleTheErrorNamesTheCause() async throws {
-        let server = try LegacyTLSServer()
-        defer { server.stop() }
+        let server = try await LegacyTLSServer.start()
         for mode in [TLSMode.preferred, .required] {
             let configuration = ConnectionConfiguration(endpoint: Endpoint(host: "127.0.0.1", port: server.port), username: "u", password: "p",
                                                         connectTimeout: 3, tls: TLSOptions(mode: mode, allowLegacyProtocols: false))
@@ -20,16 +19,16 @@ struct LegacyTLSServerTests {
             }
             #expect(ContinuousClock.now - started < .seconds(6))
         }
-        #expect(server.handshakeResponsesInPlaintext == 0, "credentials never travel in plaintext, not even in preferred mode")
+        #expect(await server.stop() == 0, "credentials never travel in plaintext, not even in preferred mode")
     }
 
     @Test func withTheLegacyToggleTLS10IsNegotiated() async throws {
-        let server = try LegacyTLSServer()
-        defer { server.stop() }
+        let server = try await LegacyTLSServer.start()
         let configuration = ConnectionConfiguration(endpoint: Endpoint(host: "127.0.0.1", port: server.port), username: "u", password: "p",
                                                     connectTimeout: 5, tls: TLSOptions(mode: .required, allowLegacyProtocols: true))
         // The fake answers the (encrypted) handshake response with "Access denied": TLS itself worked.
         await #expect { _ = try await MySQLConnection.connect(configuration) } throws: { ($0 as? MySQLError)?.code == 1045 }
+        await server.stop()
     }
 }
 
@@ -69,12 +68,21 @@ final class LegacyTLSServer: @unchecked Sendable {
     """#
 
     let port: Int
-    private let process = Process()
-    private let output = Pipe()
+    private let process: Process
+    private let output: Pipe
     private let directory: URL
 
-    init() throws {
-        directory = FileManager.default.temporaryDirectory.appendingPathComponent("ccinnmysql-legacytls-\(UUID().uuidString)")
+    private init(port: Int, process: Process, output: Pipe, directory: URL) {
+        self.port = port
+        self.process = process
+        self.output = output
+        self.directory = directory
+    }
+
+    /// Starts the fake. Every wait is `async`: blocking a thread here (`waitUntilExit`, `Thread.sleep`) starves
+    /// the Swift concurrency pool, which has only 3 threads on GitHub's macOS runners, and hung the whole test run.
+    static func start() async throws -> LegacyTLSServer {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ccinnmysql-legacytls-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let openssl = Process()
         openssl.executableURL = URL(fileURLWithPath: "/usr/bin/openssl")
@@ -82,38 +90,61 @@ final class LegacyTLSServer: @unchecked Sendable {
                              "-keyout", directory.appendingPathComponent("key.pem").path, "-out", directory.appendingPathComponent("cert.pem").path]
         openssl.standardOutput = FileHandle.nullDevice
         openssl.standardError = FileHandle.nullDevice
-        try openssl.run()
-        openssl.waitUntilExit()
+        try await runToCompletion(openssl)
+        guard openssl.terminationStatus == 0 else { throw MySQLError(.network, "openssl could not create the test certificate") }
         let scriptURL = directory.appendingPathComponent("fake.py")
-        try Self.script.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
         let portFile = directory.appendingPathComponent("port")
+        let process = Process()
+        let output = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
         process.arguments = [scriptURL.path, directory.appendingPathComponent("cert.pem").path, directory.appendingPathComponent("key.pem").path, portFile.path]
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
         try process.run()
         var port = 0
-        for _ in 0..<100 {
+        for _ in 0..<200 {
             if let text = try? String(contentsOf: portFile, encoding: .utf8), let value = Int(text) {
                 port = value
                 break
             }
-            Thread.sleep(forTimeInterval: 0.05)
+            try await Task.sleep(for: .milliseconds(50))
         }
-        guard port > 0 else { throw MySQLError(.network, "fake TLS server did not start") }
-        self.port = port
+        let server = LegacyTLSServer(port: port, process: process, output: output, directory: directory)
+        guard port > 0 else {
+            await server.stop()
+            throw MySQLError(.network, "fake TLS server did not start")
+        }
+        return server
     }
 
-    /// Connections where the client sent its handshake response without TLS.
-    var handshakeResponsesInPlaintext: Int {
-        stop()
-        let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        return text.components(separatedBy: "plaintext-handshake").count - 1
+    /// Runs a short-lived process and resumes when it exits, without blocking a thread.
+    private static func runToCompletion(_ process: Process) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            process.terminationHandler = { _ in continuation.resume() }
+            do {
+                try process.run()
+            } catch {
+                process.terminationHandler = nil
+                continuation.resume(throwing: error)
+            }
+        }
     }
 
-    func stop() {
+    /// Stops the fake and returns how many clients sent their handshake response without TLS
+    /// (`nil` if the fake would not stop, so a test expecting 0 cannot pass by accident).
+    @discardableResult
+    func stop() async -> Int? {
         if process.isRunning { process.terminate() }
-        process.waitUntilExit()
-        try? FileManager.default.removeItem(at: directory)
+        for _ in 0..<100 {
+            guard process.isRunning else { break }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        defer { try? FileManager.default.removeItem(at: directory) }
+        guard !process.isRunning else { return nil }
+        // The writer has exited, so reading to the end returns at once.
+        let data = (try? output.fileHandleForReading.readToEnd()) ?? nil
+        let text = String(decoding: data ?? Data(), as: UTF8.self)
+        return text.components(separatedBy: "plaintext-handshake").count - 1
     }
 }
