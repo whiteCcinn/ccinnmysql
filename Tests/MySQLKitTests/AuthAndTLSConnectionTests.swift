@@ -206,12 +206,9 @@ struct KillPinningTests {
         return try await MySQLClient.connect(configuration, poolSize: poolSize, transportFactory: cluster.transportFactory)
     }
 
-    /// Waits (up to 5 s) until the session reports its running statement. A fixed sleep is flaky on slow CI runners.
+    /// The kill target of the session's statement, once it has reached the server.
     private func runningTarget(of session: SQLSession) async throws -> KillTarget {
-        for _ in 0..<500 {
-            if let target = await session.runningTarget { return target }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await waitUntilStatementRuns(session)
         return try #require(await session.runningTarget)
     }
 

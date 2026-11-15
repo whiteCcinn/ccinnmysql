@@ -21,7 +21,7 @@ struct ReviewKillAndEditTests {
         let client = try await connect(cluster)
         let session = client.openSession()
         let first = Task { try await session.run("SELECT 'first'") }
-        try await Task.sleep(for: .milliseconds(50))
+        try await waitUntilStatementRuns(session)
         let cancel = Task { await session.cancel(graceSeconds: 0.3) }
         #expect(try await first.value.last?.scalar == "first", "the statement finished before the kill arrived")
         let second = try await session.run("SELECT 'second'")
@@ -37,7 +37,7 @@ struct ReviewKillAndEditTests {
         let client = try await connect(cluster)
         let session = client.openSession()
         let long = Task { try await session.run("SELECT 'long'") }
-        try await Task.sleep(for: .milliseconds(150))
+        try await waitUntilStatementRuns(session)
         await session.cancel(graceSeconds: 0.2)
         await #expect { _ = try await long.value } throws: { ($0 as? MySQLError)?.kind == .cancelled }
         #expect(cluster.kills.isEmpty)

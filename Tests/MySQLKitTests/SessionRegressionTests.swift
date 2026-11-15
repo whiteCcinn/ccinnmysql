@@ -34,7 +34,9 @@ struct SessionRegressionTests {
         let client = try await connect(cluster)
         let session = client.openSession()
         let long = Task { try await session.run("SELECT 'long'") }
-        try await Task.sleep(for: .milliseconds(100))
+        // The run has started but is still connecting (Stop before the run starts at all has nothing to stop).
+        try await waitUntil("the run is connecting") { await session.isBusy }
+        #expect(await !session.isStatementRunning)
         let started = ContinuousClock.now
         await session.cancel(graceSeconds: 0.2)
         await #expect { _ = try await long.value } throws: { ($0 as? MySQLError)?.kind == .cancelled }
@@ -56,7 +58,7 @@ struct SessionRegressionTests {
         let client = try await connect(cluster)
         let session = client.openSession()
         let first = Task { try await session.run("SELECT 'first'") }
-        try await Task.sleep(for: .milliseconds(100))
+        try await waitUntilStatementRuns(session)
         let cancel = Task { await session.cancel(graceSeconds: 0.3) }
         await #expect { _ = try await first.value } throws: { ($0 as? MySQLError)?.kind == .cancelled }
         // Re-run immediately on the same connection; the pending cancel's grace period expires meanwhile.
@@ -90,7 +92,7 @@ struct SessionRegressionTests {
         let client = try await connect(cluster)
         let session = client.openSession()
         let long = Task { try await session.run("SELECT 'long'") }
-        try await Task.sleep(for: .milliseconds(100))
+        try await waitUntilStatementRuns(session)
         await #expect { _ = try await session.run("SELECT 2") } throws: { ($0 as? MySQLError)?.kind == .busy }
         #expect(await session.runningTarget != nil, "the rejected run must not clear the running statement")
         await session.cancel(graceSeconds: 1)

@@ -3,6 +3,21 @@ import MySQLWire
 import os
 @testable import MySQLKit
 
+/// Waits (up to 5 s) until `condition` holds. Tests use it instead of a fixed sleep before cancelling: on a slow
+/// CI runner a run may still be connecting after 100 ms, and Stop would then prevent the statement instead.
+func waitUntil(_ what: String, _ condition: @Sendable () async -> Bool) async throws {
+    for _ in 0..<500 {
+        if await condition() { return }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    throw MySQLError(.timeout, "Timed out waiting until \(what)")
+}
+
+/// Waits until the session's statement has reached the server.
+func waitUntilStatementRuns(_ session: SQLSession) async throws {
+    try await waitUntil("the statement runs") { await session.isStatementRunning }
+}
+
 /// A fake deployment: every connection is a `FakeMySQLServer` on one of `backends` servers (round-robin,
 /// like a load balancer). `KILL [QUERY] <id>` interrupts thread `id` only on the backend that receives it.
 /// In ProxySQL mode, kill ids are proxy session ids (greeting connection ids) and work from any backend.

@@ -13,9 +13,12 @@ public actor SQLSession {
     /// Increases with every statement, so a late cancel never touches a newer run on the same connection.
     private var runGeneration: UInt64 = 0
     private var cancelledGeneration: UInt64?
-    private var isBusy = false
+    /// A run is in progress (connecting, waiting for an earlier kill, or executing).
+    public private(set) var isBusy = false
     /// The statement on the wire: its generation and connection (set together with `runningTarget`).
     private var runningStatement: (generation: UInt64, connection: MySQLConnection)?
+    /// The current run's statement has reached the server (Stop then kills or closes it instead of preventing it).
+    public var isStatementRunning: Bool { runningStatement != nil }
     /// Stop was pressed while the current run had not reached the server yet (waiting for an earlier kill
     /// or reconnecting). The run then stops before sending its statement instead of ignoring the request.
     private var cancelRequestedBeforeStart = false
