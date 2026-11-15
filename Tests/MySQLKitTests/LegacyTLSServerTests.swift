@@ -16,6 +16,7 @@ struct LegacyTLSServerTests {
             await #expect { _ = try await MySQLConnection.connect(configuration) } throws: { error in
                 guard let error = error as? MySQLError else { return false }
                 return error.kind == .tls && error.message.contains("TLS 1.0/1.1") && error.message.contains("SSH tunnel")
+                    && error.message.contains("within 3 s") && error.message.contains("not responding")
             }
             #expect(ContinuousClock.now - started < .seconds(6))
         }

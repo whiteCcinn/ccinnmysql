@@ -26,6 +26,9 @@ public enum ReadOnlySQLGuard {
         "SERVICE_GET_", "SERVICE_RELEASE_", "MASKING_DICTIONARY", "ROTATE_", "ADD_", "DROP_", "SET_",
     ]
 
+    /// Characters some tools treat as line ends although the server ends a line comment only at `\n`.
+    static let lineBreaksInOtherTools: Set<UInt32> = [0x0D, 0x0B, 0x0C, 0x85, 0x2028, 0x2029]
+
     /// Optimizer hints that would override the server-side time limit or session settings.
     static let forbiddenHints = ["MAX_EXECUTION_TIME", "SET_VAR", "RESOURCE_GROUP"]
 
@@ -40,6 +43,18 @@ public enum ReadOnlySQLGuard {
         let all = lexer.tokens()
         if all.contains(where: { $0.kind == .executableComment }) {
             return "Executable comments (/*! … */) are not allowed in read-only mode."
+        }
+        // Be stricter than the server wherever line-ending rules differ between tools: the server ends a line comment
+        // only at `\n`, other tools also at `\r`, VT, FF, NEL, LS or PS. A `\r` directly before the ending `\n` (CRLF) is
+        // unambiguous.
+        for comment in all where comment.kind == .comment {
+            let text = lexer.text(of: comment)
+            guard text.hasPrefix("#") || text.hasPrefix("--") else { continue }
+            var body = Array(text.unicodeScalars)
+            if body.last == "\r" { body.removeLast() }
+            if body.contains(where: { lineBreaksInOtherTools.contains($0.value) }) {
+                return "Line comments containing carriage returns, vertical tabs, form feeds or Unicode line separators are not allowed in read-only mode."
+            }
         }
         for hint in all where hint.kind == .comment && lexer.text(of: hint).hasPrefix("/*+") {
             let text = lexer.text(of: hint).uppercased()

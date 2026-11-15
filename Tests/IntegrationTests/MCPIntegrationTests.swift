@@ -106,6 +106,8 @@ final class MCPProcess: @unchecked Sendable {
     static var binaryExists: Bool { FileManager.default.isExecutableFile(atPath: binary.path) }
 
     private let process = Process()
+    /// The subprocess's pid, which its connections report in the `_pid` attribute.
+    var pid: Int32 { process.processIdentifier }
     private let input = Pipe()
     private let output = Pipe()
     let directory: URL

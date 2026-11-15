@@ -44,6 +44,9 @@ struct MCPSettingsView: View {
                 Text("Read-only allows metadata and diagnostics tools and SELECT / SHOW / DESCRIBE / EXPLAIN inside read-only transactions, at most 1,000 rows per call. Read & write adds a tool that runs any statement. Every call is logged to mcp-audit.jsonl in the app's data folder.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Label("Read-only means no data or schema changes; side effects inside existing stored functions (GET_LOCK, SLEEP, …) can't be inspected. For real isolation, use a dedicated MySQL user with SELECT only (plus PROCESS / SHOW VIEW / performance_schema SELECT for the diagnostics tools).", systemImage: "person.badge.shield.checkmark")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Section("Add the server to your AI client") {
                 ForEach(snippets, id: \.title) { snippet in

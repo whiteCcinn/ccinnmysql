@@ -20,11 +20,11 @@ scripts/build-app.sh --open
 ```bash
 scripts/it-up.sh m57 m84 mariadb1011 mariadb114   # see scripts/it-up.sh for every target (all-basic, r84, galera, proxysql, …)
 scripts/it-wait.sh m57 m84 mariadb1011 mariadb114
-swift build && CCINNMYSQL_IT=1 swift test --skip-build --filter IntegrationTests
+swift build && CCINNMYSQL_IT=1 swift test --skip-build --no-parallel --filter IntegrationTests
 scripts/it-down.sh
 ```
 
-Containers are named `ccinnmysql-it-*`, bound to `127.0.0.1:13300–13399` and limited to 384 MB each; tests skip servers that are not running and accept `CCINNMYSQL_IT_TARGETS=m84,mariadb114` to narrow the matrix. `scripts/seed-demo.sql` creates the `shop` schema used by the tests and screenshots: tables in three engines, a partitioned table, foreign keys, a redundant index, a table without a primary key, an AUTO_INCREMENT close to its limit, a view, a procedure, a function, a trigger and an event. Images are pulled from `public.ecr.aws/docker/library` (override with `CCINNMYSQL_IT_REGISTRY`).
+Containers are named `ccinnmysql-it-*`, bound to `127.0.0.1:13300–13399` and limited to 384 MB each (`--no-parallel` keeps the load on them low; the suites also pass in parallel); tests skip servers that are not running and accept `CCINNMYSQL_IT_TARGETS=m84,mariadb114` to narrow the matrix. `scripts/seed-demo.sql` creates the `shop` schema used by the tests and screenshots: tables in three engines, a partitioned table, foreign keys, a redundant index, a table without a primary key, an AUTO_INCREMENT close to its limit, a view, a procedure, a function, a trigger and an event. Images are pulled from `public.ecr.aws/docker/library` (override with `CCINNMYSQL_IT_REGISTRY`).
 
 ### Running the app against a server directly
 

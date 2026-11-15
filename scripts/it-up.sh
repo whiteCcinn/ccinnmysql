@@ -12,7 +12,10 @@ MEMORY=384m
 # Keeps MySQL 8+/9 inside 384 MB.
 SMALL_MYSQL="--innodb-buffer-pool-size=32M --performance-schema-max-digest-length=1024 --performance-schema-digests-size=2000 \
 --performance-schema-events-statements-history-long-size=1000 --performance-schema-max-table-instances=500 \
---performance-schema-max-thread-instances=200 --max-connections=80"
+--performance-schema-max-thread-instances=120 --performance-schema-accounts-size=32 --performance-schema-hosts-size=32 \
+--performance-schema-users-size=32 --max-connections=80 \
+--innodb-log-buffer-size=4M --key-buffer-size=1M --tmp-table-size=8M --max-heap-table-size=8M --table-open-cache=256 \
+--loose-temptable-max-ram=32M --loose-temptable-max-mmap=128M"  # TempTable defaults to 1 GiB of RAM; keep 384 MB containers alive
 SMALL_MARIADB="--innodb-buffer-pool-size=32M --performance-schema=ON --max-connections=80"
 
 docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NETWORK" >/dev/null

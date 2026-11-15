@@ -13,9 +13,20 @@ struct TopologyIntegrationTests {
 
     @Test(.enabled(if: IntegrationEnvironment.isListening(port: 13384) && IntegrationEnvironment.isListening(port: 13386)))
     func primaryAndReplica() async throws {
+        // Self-contained fixture: the replication account on the primary, then the replica channel.
+        let primary = try await MySQLClient.connect(Self.configuration(port: 13384), poolSize: 2)
+        defer { Task { await primary.close() } }
+        _ = try await primary.execute("CREATE USER IF NOT EXISTS 'repl'@'%' IDENTIFIED BY 'Repl-pw-1'")
+        _ = try await primary.execute("GRANT REPLICATION SLAVE ON *.* TO 'repl'@'%'")
         let replica = try await MySQLClient.connect(Self.configuration(port: 13386), poolSize: 2)
         defer { Task { await replica.close() } }
-        if try await replica.replicationOverview().channels.isEmpty {
+        if let existing = try await replica.replicationOverview().channels.first {
+            // A channel that failed before the account existed waits up to 60 s between retries; reconnect now.
+            if !existing.isHealthy {
+                _ = try await replica.execute("STOP REPLICA")
+                _ = try await replica.execute("START REPLICA")
+            }
+        } else {
             _ = try await replica.execute("""
                 CHANGE REPLICATION SOURCE TO SOURCE_HOST = 'ccinnmysql-it-m84', SOURCE_PORT = 3306, SOURCE_USER = 'repl', \
                 SOURCE_PASSWORD = 'Repl-pw-1', SOURCE_AUTO_POSITION = 1, GET_SOURCE_PUBLIC_KEY = 1
@@ -35,8 +46,6 @@ struct TopologyIntegrationTests {
         #expect(try await replica.replicationOverview().role == .replica)
         #expect(replica.serverInfo.readOnly)
 
-        let primary = try await MySQLClient.connect(Self.configuration(port: 13384), poolSize: 2)
-        defer { Task { await primary.close() } }
         let source = try await primary.replicationOverview()
         #expect(source.binlogFile != nil)
         #expect(!source.connectedReplicas.isEmpty)

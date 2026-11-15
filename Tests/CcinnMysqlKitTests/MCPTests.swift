@@ -332,3 +332,11 @@ struct MySQLMCPToolTests {
         #expect(encoded["truncated"] == .bool(true))
     }
 }
+
+@Suite("MCP connection identity")
+struct MCPConnectionIdentityTests {
+    @Test func mcpConnectionsAreTaggedDistinctly() {
+        #expect(ClientOpener.mcpApplicationName != ClientOpener.appApplicationName)
+        #expect(ClientOpener.mcpApplicationName.utf8.count <= 64)
+    }
+}

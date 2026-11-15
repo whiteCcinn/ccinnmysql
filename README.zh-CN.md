@@ -159,6 +159,17 @@ CcinnMysql 内置 **Model Context Protocol** 服务器。Claude Code、Codex、C
 - 结果最多 1,000 行（默认 200 行）、约 256 KB；语句默认 30 秒超时（最长 120 秒）；在 AI 客户端取消请求会向正确的服务器发送 `KILL QUERY`。
 - `--read-only` 把所有连接限制为只读；`--profile <名称>` 指定默认连接。
 - 每次调用都记录到 `~/Library/Application Support/CcinnMysql/mcp-audit.jsonl`（凭据已脱敏，文件权限 0600）。
+- 每次调用都使用独立的会话，结束后立即关闭，因此会话状态（用户变量、`SET SESSION`、临时表、命名锁）不会延续到下一次调用。
+- MCP 连接会以 `program_name = 'CcinnMysql MCP'`（`_pid` 为进程号）向服务器表明身份，DBA 可以在 `performance_schema.session_connect_attrs` 中找到 AI 会话。
+
+**“只读”的范围。** 只读意味着 AI 无法修改数据或表结构，但应用无法检查服务器上已有存储函数的内部：查询调用的函数在执行期间仍可能产生副作用，例如 `GET_LOCK`、`SLEEP`，或在服务器允许的情况下执行 `KILL`。如需真正的隔离，请为 MCP 连接使用专用的 MySQL 用户，只授予所需库的 `SELECT` 权限；如果需要诊断类工具，再加上 `PROCESS`、`SHOW VIEW` 和 `performance_schema` 的 `SELECT` 权限：
+
+```sql
+CREATE USER 'ai_ro'@'%' IDENTIFIED BY '…';
+GRANT SELECT, SHOW VIEW ON app.* TO 'ai_ro'@'%';
+GRANT PROCESS ON *.* TO 'ai_ro'@'%';                     -- 可选：进程列表、InnoDB 状态
+GRANT SELECT ON performance_schema.* TO 'ai_ro'@'%';     -- 可选：Top 语句、锁等待
+```
 
 另有两个**仅供集成测试使用**的环境变量，不应在日常使用：`CCINNMYSQL_PROFILE_DIR=<路径>` 从其他目录读取连接配置（审计日志也写到那里），`CCINNMYSQL_TEST_INSECURE_SECRETS_FILE=<json>` 从 JSON 文件而不是钥匙串读取密码。
 
@@ -182,7 +193,7 @@ scripts/package-release.sh 1.0.0     # 在 dist/ 生成通用二进制 .app、.z
 ```bash
 scripts/it-up.sh m57 m80 m84 mariadb1011 mariadb114   # 或 all-basic；拓扑：r84 galera proxysql
 scripts/it-wait.sh m57 m80 m84 mariadb1011 mariadb114
-swift build && CCINNMYSQL_IT=1 swift test --skip-build --filter IntegrationTests
+swift build && CCINNMYSQL_IT=1 swift test --skip-build --no-parallel --filter IntegrationTests
 scripts/it-down.sh
 ```
 

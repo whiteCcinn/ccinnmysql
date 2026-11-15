@@ -74,7 +74,8 @@ enum MCPCommand {
             let sshSecret = profile.ssh != nil ? repository.sshSecret(for: profile) : nil
             let passphrase = profile.clientCertificatePath != nil ? repository.clientCertificatePassphrase(for: profile) : nil
             return try await ClientOpener.open(profile: profile, password: password, sshSecret: sshSecret,
-                                               clientCertificatePassphrase: passphrase, poolSize: 3)
+                                               clientCertificatePassphrase: passphrase, poolSize: 3,
+                                               applicationName: ClientOpener.mcpApplicationName)
         }
         let provider = MySQLMCPTools(resolver: resolver, registry: registry,
                                          audit: MCPAuditLog(directory: ProfileRepository.defaultDirectory))

@@ -90,11 +90,14 @@ public actor MySQLConnection {
     /// A TLS handshake that never completes (the system TLS stack rejected the server's protocol version, e.g. a
     /// TLS 1.0-only yaSSL build) surfaces as a stalled read; explain the likely cause and the ways out.
     static func tlsStallError(_ configuration: ConnectionConfiguration) -> MySQLError {
+        // A stall cannot be told apart from a server that is alive but not answering, so say both.
         let endpoint = configuration.endpoint
+        let seconds = Int(configuration.connectTimeout.rounded())
+        let unresponsive = "If the server does support TLS 1.2, it is not responding (overloaded or out of memory) — try again later."
         if configuration.tls.allowLegacyProtocols {
-            return MySQLError(.tls, "The TLS handshake with \(endpoint) did not complete: the server offers no protocol or cipher this Mac accepts. Use an SSH tunnel, or set TLS to Disabled for this connection.")
+            return MySQLError(.tls, "The TLS handshake with \(endpoint) did not complete within \(seconds) s. The server most likely offers no protocol or cipher this Mac accepts: use an SSH tunnel, or set TLS to Disabled for this connection. \(unresponsive)")
         }
-        return MySQLError(.tls, "The TLS handshake with \(endpoint) did not complete: the server does not support TLS 1.2 or newer. Old MySQL 5.6/5.7 builds (yaSSL) only speak TLS 1.0/1.1 — enable “Allow TLS 1.0 / 1.1” for this connection, connect through an SSH tunnel, or set TLS to Disabled.")
+        return MySQLError(.tls, "The TLS handshake with \(endpoint) did not complete within \(seconds) s. The usual cause is a server that only speaks TLS 1.0/1.1 (old MySQL 5.6/5.7 builds with yaSSL): enable “Allow TLS 1.0 / 1.1” for this connection, connect through an SSH tunnel, or set TLS to Disabled. \(unresponsive)")
     }
 
     private static func connectOnce(_ configuration: ConnectionConfiguration, transportFactory: TransportFactory) async throws -> MySQLConnection {

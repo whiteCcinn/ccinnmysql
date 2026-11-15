@@ -73,12 +73,50 @@ struct MCPReadOnlyIntegrationTests {
         #expect(try await admin.execute("SELECT @@GLOBAL.max_connections").scalar == maxConnectionsBefore)
         #expect(try await admin.execute("SELECT IS_FREE_LOCK('ccinn_it_lock')").scalar == "1")
         #expect(try await admin.execute("SELECT LOAD_FILE(\(SQLText.literal(outFile))) IS NULL").scalar == "1", "no file was written")
-        #expect(try await admin.execute("SELECT COUNT(*) FROM information_schema.INNODB_TRX").scalar == "0", "no transaction left open")
-        let busy = try await admin.execute("""
-            SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE ID <> CONNECTION_ID() AND COMMAND <> 'Sleep' AND COMMAND <> 'Daemon' \
-            AND USER = 'root' AND (INFO IS NULL OR INFO NOT LIKE '%PROCESSLIST%')
-            """).scalar
+        // Scoped to this MCP process's own sessions (program_name + _pid attributes), so suites running in parallel
+        // (including another MCP process) don't interfere.
+        let mcpSessions = """
+            SELECT p.PROCESSLIST_ID FROM performance_schema.session_connect_attrs p \
+            JOIN performance_schema.session_connect_attrs n ON n.PROCESSLIST_ID = p.PROCESSLIST_ID \
+            WHERE p.ATTR_NAME = '_pid' AND p.ATTR_VALUE = '\(process.pid)' \
+            AND n.ATTR_NAME = 'program_name' AND n.ATTR_VALUE = \(SQLText.literal(ClientOpener.mcpApplicationName))
+            """
+        let liveMCPSessions = Int(try await admin.execute("SELECT COUNT(*) FROM (\(mcpSessions)) s").scalar ?? "") ?? 0
+        #expect(liveMCPSessions >= 1, "the MCP process's pooled connection identifies itself")
+        #expect(try await admin.execute("SELECT COUNT(*) FROM information_schema.INNODB_TRX WHERE trx_mysql_thread_id IN (\(mcpSessions))").scalar == "0",
+                "no transaction left open")
+        let busy = try await admin.execute("SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE ID IN (\(mcpSessions)) AND COMMAND <> 'Sleep'").scalar
         #expect(busy == "0", "MCP sessions are idle or closed")
         #expect(try await admin.execute("SELECT @@GLOBAL.autocommit").scalar == "1")
+    }
+
+    /// The guard cannot see inside an existing stored function, so `SELECT fn()` that takes a named lock is allowed —
+    /// but each MCP call runs in its own session that is closed afterwards, so the lock does not outlive the call.
+    @Test(arguments: IntegrationEnvironment.targets.filter { ["MySQL 8.4", "MariaDB 11.4 Galera", "MariaDB 11.4"].contains($0.label) })
+    func sessionStateDoesNotOutliveACall(target: IntegrationEnvironment.Target) async throws {
+        let admin = try await MySQLClient.connect(IntegrationEnvironment.rootConfiguration(target), poolSize: 1)
+        defer { Task { await admin.close() } }
+        _ = try await admin.execute("CREATE DATABASE IF NOT EXISTS ccinn_it")
+        _ = try? await admin.execute("DROP FUNCTION ccinn_it.fn_lock")
+        _ = try await admin.execute("CREATE FUNCTION ccinn_it.fn_lock() RETURNS INT NOT DETERMINISTIC NO SQL RETURN GET_LOCK('ccinn_it_fn_lock', 0)")
+        defer { Task { _ = try? await admin.execute("DROP FUNCTION ccinn_it.fn_lock") } }
+
+        let process = try MCPProcess(target: target, database: nil)
+        defer { process.terminate() }
+        _ = try await process.request(["jsonrpc": "2.0", "id": 1, "method": "initialize",
+                                       "params": ["protocolVersion": "2025-06-18", "capabilities": [:], "clientInfo": ["name": "it", "version": "1"]]])
+        #expect(ReadOnlySQLGuard.check("SELECT ccinn_it.fn_lock() AS locked") == nil)
+        let response = try await process.request(["jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                                                  "params": ["name": "run_query", "arguments": ["sql": "SELECT ccinn_it.fn_lock() AS locked"]]])
+        #expect(response["result"]?["isError"] != .bool(true), "\(target.label): \(response)")
+        #expect(response["result"]?["structuredContent"]?["rows"]?[0]?[0]?.intValue == 1, "the function took the lock inside the call: \(response)")
+
+        // The server releases a closed session's locks asynchronously after COM_QUIT; allow it a moment.
+        var free = try await admin.execute("SELECT IS_FREE_LOCK('ccinn_it_fn_lock')").scalar
+        for _ in 0..<20 where free != "1" {
+            try await Task.sleep(nanoseconds: 100_000_000)
+            free = try await admin.execute("SELECT IS_FREE_LOCK('ccinn_it_fn_lock')").scalar
+        }
+        #expect(free == "1", "\(target.label): the named lock was released with the call's session")
     }
 }

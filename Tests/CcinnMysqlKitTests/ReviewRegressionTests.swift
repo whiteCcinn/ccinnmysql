@@ -16,6 +16,8 @@ struct GuardReviewRegressionTests {
         "SELECT 1 #\r'\nFOR UPDATE -- '",
         "SELECT 1\u{0} INTO OUTFILE '/tmp/x'",
         "SELECT 1 #\u{0}'\nINTO OUTFILE '/tmp/x' -- '",
+        "SELECT 1 -- note\rFROM t", "SELECT 1 # note\u{0B}FROM t", "SELECT 1 # note\u{0C}FROM t", "SELECT 1 -- a\r\rb\n",
+        "SELECT 1 # note\u{85}FROM t", "SELECT 1 -- note\u{2028}FROM t", "SELECT 1 # note\u{2029}FROM t",
     ])
     func commentBoundariesMatchTheServer(sql: String) {
         #expect(ReadOnlySQLGuard.check(sql) != nil, "\(sql.debugDescription)")
@@ -44,7 +46,8 @@ struct GuardReviewRegressionTests {
     }
 
     @Test(arguments: ["SELECT /*+ INDEX(t idx_a) */ * FROM t", "SELECT `group_replication_applier` FROM t", "SELECT `sleep` FROM t",
-                      "SELECT is_free_lock('x')", "SELECT 'a\r\nb' FROM t", "SELECT 1 # comment\r\n"])
+                      "SELECT is_free_lock('x')", "SELECT 'a\r\nb' FROM t", "SELECT 1 # comment\r\n",
+                      "SELECT 1 -- comment\r\nFROM t", "SELECT 1 # comment\r", "SELECT '\u{0B}\u{0C}' -- ok\n", "SELECT '\u{2028}' /* \u{85}\r */ FROM t"])
     func harmlessQueriesStillPass(sql: String) {
         #expect(ReadOnlySQLGuard.check(sql) == nil, "\(sql.debugDescription)")
     }
@@ -119,5 +122,119 @@ struct SQLModeReviewRegressionTests {
             == "REAL_AS_FLOAT,STRICT_TRANS_TABLES")
         #expect(SQLModes.withoutLexerAffectingModes("") == "")
         #expect(SQLModes.withoutLexerAffectingModes("A';DROP") == "", "only mode names survive")
+    }
+}
+
+/// Differential check: an independent, server-like tokenizer (line comments end only at `\n`/NUL; `--` + space/control;
+/// `/*!` and `/*M!` content is code; backslash escapes in strings; `1abc` is one identifier) must find no forbidden
+/// keyword and no forbidden function call in any statement the guard accepts.
+@Suite("Read-only guard differential fuzz")
+struct GuardDifferentialFuzzTests {
+    /// Words the guard forbids anywhere in a SELECT (a subset of `ReadOnlySQLGuard.forbidden`).
+    static let forbiddenWords: Set<String> = ["INSERT", "UPDATE", "DELETE", "REPLACE", "DROP", "CREATE", "ALTER", "INTO", "OUTFILE",
+                                              "LOAD", "CALL", "LOCK", "KILL", "GRANT", "TRUNCATE", "DO", "HANDLER"]
+    static let forbiddenCalls: Set<String> = ["LOAD_FILE", "GET_LOCK", "SLEEP", "RELEASE_LOCK", "BENCHMARK"]
+
+    /// Deterministic generator so a failure reproduces.
+    struct SplitMix64: RandomNumberGenerator {
+        var state: UInt64
+        mutating func next() -> UInt64 {
+            state &+= 0x9E37_79B9_7F4A_7C15
+            var z = state
+            z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+            z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+            return z ^ (z >> 31)
+        }
+    }
+
+    /// Tokens outside strings, quoted identifiers and plain comments, as the server would see them (words upper-cased,
+    /// punctuation as single characters).
+    static func serverTokens(_ sql: String) -> [String] {
+        let chars = Array(sql.unicodeScalars)
+        var tokens: [String] = []
+        var index = 0
+        var word = ""
+        func flush() {
+            if !word.isEmpty { tokens.append(word.uppercased()) }
+            word = ""
+        }
+        func at(_ offset: Int) -> Unicode.Scalar? { index + offset < chars.count ? chars[index + offset] : nil }
+        while index < chars.count {
+            let c = chars[index]
+            if c == "'" || c == "\"" || c == "`" {
+                flush()
+                tokens.append("<literal>")
+                index += 1
+                while index < chars.count {
+                    if c != "`", chars[index] == "\\" { index += 2; continue }
+                    if chars[index] == c {
+                        if at(1) == c { index += 2; continue }
+                        break
+                    }
+                    index += 1
+                }
+                index += 1
+            } else if c == "#" || (c == "-" && at(1) == "-" && (at(2).map { $0.value <= 0x20 || $0.value == 0x7F } ?? true)) {
+                flush()
+                while index < chars.count, chars[index] != "\n", chars[index].value != 0 { index += 1 }
+            } else if c == "/", at(1) == "*" {
+                flush()
+                if at(2) == "!" || (at(2) == "M" && at(3) == "!") {
+                    index += at(2) == "!" ? 3 : 4 // executable: the content is code
+                    continue
+                }
+                index += 2
+                while index < chars.count, !(chars[index] == "*" && at(1) == "/") { index += 1 }
+                index += 2
+            } else if c.properties.isAlphabetic || c == "_" || c == "$" || ("0"..."9").contains(c) {
+                word.unicodeScalars.append(c)
+                index += 1
+            } else {
+                flush()
+                if c.value > 0x20 { tokens.append(String(c)) }
+                index += 1
+            }
+        }
+        flush()
+        return tokens
+    }
+
+    static func leaks(_ sql: String) -> [String] {
+        let tokens = serverTokens(sql)
+        return tokens.indices.compactMap { index in
+            let token = tokens[index]
+            if forbiddenWords.contains(token) { return token }
+            if forbiddenCalls.contains(token), index + 1 < tokens.count, tokens[index + 1] == "(" { return token + "(" }
+            return nil
+        }
+    }
+
+    @Test func oracleSeesTheKnownSmuggles() {
+        #expect(Self.leaks("SELECT 1 #\r'\nINTO OUTFILE '/tmp/x' -- '") == ["INTO", "OUTFILE"])
+        #expect(Self.leaks("SELECT /*!50000 SLEEP(1) */") == ["SLEEP("])
+        #expect(Self.leaks("SELECT 'a\\' INTO' FROM t") == [])
+        #expect(Self.leaks("SELECT 1LOAD_FILE('x')") == [])
+    }
+
+    @Test(arguments: [UInt64(1), 2, 3, 4])
+    func acceptedStatementsHideNoForbiddenTokens(seed: UInt64) {
+        let pieces = [" ", "\n", "\r", "\r\n", "\u{0B}", "\u{0C}", "\t", "#", "-- ", "--", "--\u{7F}", "--\r", "/*", "*/", "/*!",
+                      "/*M!", "/*+ ", "'", "\"", "`", "\\", "\\'", "INTO OUTFILE '/tmp/x'", "LOAD_FILE('/etc/passwd')", "GET_LOCK('x', 0)",
+                      " FROM t", ", 2", " SLEEP (1)", "DELETE FROM t", "x", "''", "\"\"", "``", "(", ")", " FOR UPDATE", " CHARACTER SET utf8mb4",
+                      "\u{0}", " ; SELECT 2", "/**/(", "1"]
+        var generator = SplitMix64(state: seed)
+        var accepted = 0
+        for _ in 0..<15_000 {
+            var sql = "SELECT 1"
+            for _ in 0..<Int.random(in: 1...9, using: &generator) {
+                sql += pieces.randomElement(using: &generator) ?? " "
+            }
+            guard ReadOnlySQLGuard.check(sql) == nil else { continue }
+            accepted += 1
+            let leaked = Self.leaks(sql)
+            #expect(leaked.isEmpty, "\(sql.debugDescription) → \(leaked)")
+            if !leaked.isEmpty { return }
+        }
+        #expect(accepted > 500, "the fuzz must exercise accepted statements too (\(accepted))")
     }
 }

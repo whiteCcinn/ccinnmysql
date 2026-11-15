@@ -159,6 +159,17 @@ CcinnMysql has a built-in **Model Context Protocol** server. AI assistants such 
 - Results are capped at 1,000 rows (200 by default) and about 256 KB; statements time out after 30 s by default (max 120 s); cancelling a request sends `KILL QUERY` to the right server.
 - `--read-only` caps every connection at read-only; `--profile <name>` picks the default connection.
 - Every call is logged (credentials redacted, file mode 0600) to `~/Library/Application Support/CcinnMysql/mcp-audit.jsonl`.
+- Each call opens its own session and closes it afterwards, so session state (user variables, `SET SESSION`, temporary tables, named locks) never carries over to the next call.
+- MCP connections identify themselves to the server as `program_name = 'CcinnMysql MCP'` (with the process id in `_pid`), so DBAs can find AI sessions in `performance_schema.session_connect_attrs`.
+
+**What "read-only" covers.** Read-only means the AI cannot change data or schema. It cannot see inside stored functions that already exist on the server: a function the query calls may still have side effects such as `GET_LOCK`, `SLEEP` or `KILL` (where the server allows it in a function) while the call runs. For real isolation, give the MCP connection a dedicated MySQL user with only `SELECT` on the databases it needs, plus `PROCESS`, `SHOW VIEW` and `SELECT` on `performance_schema` if you want the diagnostics tools:
+
+```sql
+CREATE USER 'ai_ro'@'%' IDENTIFIED BY '…';
+GRANT SELECT, SHOW VIEW ON app.* TO 'ai_ro'@'%';
+GRANT PROCESS ON *.* TO 'ai_ro'@'%';                     -- optional: processlist, InnoDB status
+GRANT SELECT ON performance_schema.* TO 'ai_ro'@'%';     -- optional: top statements, lock waits
+```
 
 Two environment variables exist **for the integration tests only** and are not meant for normal use: `CCINNMYSQL_PROFILE_DIR=<path>` reads profiles from another folder (the audit log goes there too), and `CCINNMYSQL_TEST_INSECURE_SECRETS_FILE=<json>` reads passwords from a JSON file instead of the Keychain.
 
@@ -182,7 +193,7 @@ Docker is required. Containers are named `ccinnmysql-it-*`, listen on `127.0.0.1
 ```bash
 scripts/it-up.sh m57 m80 m84 mariadb1011 mariadb114   # or: all-basic; topology: r84 galera proxysql
 scripts/it-wait.sh m57 m80 m84 mariadb1011 mariadb114
-swift build && CCINNMYSQL_IT=1 swift test --skip-build --filter IntegrationTests
+swift build && CCINNMYSQL_IT=1 swift test --skip-build --no-parallel --filter IntegrationTests
 scripts/it-down.sh
 ```
 

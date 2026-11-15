@@ -18,4 +18,4 @@ All notable changes to this project are documented here. The format is based on
 - Server views: overview, processlist with pinned kills, InnoDB transactions / lock waits / latest deadlock, top statements from `performance_schema`, replication and topology (replicas, Group Replication, Galera, ProxySQL), variables, status with per-second rates, users and grants.
 - SQL workbench with completion, `DELIMITER` support, automatic LIMIT, error positions, history, export, charts, visual EXPLAIN (`FORMAT=JSON`, `EXPLAIN ANALYZE`, MariaDB `ANALYZE FORMAT=JSON`) and safe inline row editing.
 - SSH tunnels through the system OpenSSH client; Keychain secrets.
-- Built-in MCP server (`CcinnMysql mcp`) with per-connection AI access, app-enforced and server-enforced read-only mode, limits, cancellation and an audit log.
+- Built-in MCP server (`CcinnMysql mcp`) with per-connection AI access, app-enforced and server-enforced read-only mode, limits, cancellation, a fresh session per call, connections tagged `program_name = 'CcinnMysql MCP'` and an audit log; the README and SECURITY.md describe what read-only covers and recommend a dedicated SELECT-only MySQL user.

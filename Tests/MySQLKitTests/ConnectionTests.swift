@@ -193,3 +193,18 @@ private final class SilentTransport: ByteTransport, Sendable {
     }
     func close() {}
 }
+
+@Suite("Connection attributes")
+struct ConnectionAttributeTests {
+    @Test func programNameFollowsTheApplicationName() {
+        var configuration = ConnectionConfiguration(endpoint: Endpoint(host: "db", port: 3306), username: "u")
+        #expect(Handshake.attributes(configuration).contains { $0 == ("program_name", "CcinnMysql") })
+        configuration.applicationName = "CcinnMysql MCP"
+        let attributes = Handshake.attributes(configuration)
+        #expect(attributes.contains { $0 == ("program_name", "CcinnMysql MCP") })
+        #expect(attributes.contains { $0 == ("_client_name", "CcinnMysql MCP") })
+        #expect(attributes.contains { $0 == ("_pid", String(ProcessInfo.processInfo.processIdentifier)) }, "like libmysqlclient, for DBAs")
+        configuration.applicationName = String(repeating: "x", count: 300)
+        #expect(Handshake.attributes(configuration).allSatisfy { $0.1.count <= 64 }, "attribute values stay bounded")
+    }
+}
