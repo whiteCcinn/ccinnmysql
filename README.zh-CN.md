@@ -98,6 +98,14 @@ TLS 与 `mysql` 客户端一样，在服务器握手包之后通过 `SSLRequest`
 
 每个版本都在 `SHA256SUMS.txt` 中提供 SHA-256 校验和。
 
+### 更新
+
+选择 **CcinnMysql → 检查更新…（Check for Updates…）**。如果有新版本，CcinnMysql 会显示更新内容。**下载并打开（Download & Open）** 会把磁盘映像保存到“下载”文件夹，按该版本的 `SHA256SUMS.txt` 校验后再打开。退出 CcinnMysql，然后把新版本拖到 **应用程序** 文件夹即可。
+
+CcinnMysql 每天也会在后台自动检查一次，可以在 **设置 → 通用 → 更新** 中关闭。检查只访问 GitHub 的公开 Releases API，也可以选择 **跳过此版本（Skip This Version）**。
+
+项目主页、发布说明和问题反馈入口也在 **帮助** 菜单和“关于”窗口中。
+
 ## 快速开始
 
 1. 点击 **New Connection**，填写主机、端口（默认 **3306**）、用户名和密码。TLS 默认为"首选"；生产服务器建议选择"校验身份"并指定 CA 文件。

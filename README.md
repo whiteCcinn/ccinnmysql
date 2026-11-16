@@ -98,6 +98,14 @@ TLS is negotiated on the same socket after the server greeting (`SSLRequest`), l
 
 Each release lists SHA-256 checksums in `SHA256SUMS.txt`.
 
+### Updating
+
+Choose **CcinnMysql → Check for Updates…**. If a newer release exists, CcinnMysql shows what's new. **Download & Open** saves the disk image to your Downloads folder, checks it against the release's `SHA256SUMS.txt`, and opens it. Quit CcinnMysql, then drag the new version onto **Applications**.
+
+CcinnMysql also checks quietly once a day; turn this off in **Settings → General → Updates**. The check contacts only GitHub's public releases API, and you can **Skip This Version**.
+
+The project page, release notes and issue tracker are also in the **Help** menu and the About window.
+
 ## Quick start
 
 1. Click **New Connection** and enter host, port (default **3306**), user and password. TLS is *Preferred* by default; choose *Verify identity* and a CA file for production servers.
