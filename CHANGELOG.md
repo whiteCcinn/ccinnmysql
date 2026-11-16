@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-18
+
 ### Added
 
 - **Precise SQL error markers.**
