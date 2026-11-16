@@ -33,7 +33,7 @@ CCINNMYSQL_PASSWORD=secret dist/CcinnMysql.app/Contents/MacOS/CcinnMysql \
   --connect 127.0.0.1:13384 --user root --database shop --object shop.orders --section insights
 ```
 
-Passwords never go on the command line; use `CCINNMYSQL_PASSWORD`. Other launch arguments: `--tls disabled|preferred|required|verifyCA|verifyIdentity`, `--sql "…" --auto-run [--view grid|chart|plan]`, `--server overview|processlist|innodb|statements|replication|variables|status|users`, `--profile <saved name>`, `--appearance light|dark`, and `--snapshot <file.png> --snapshot-delay <seconds> --quit-after-snapshot` (renders the window off-screen without stealing focus or needing screen-recording permission).
+Passwords never go on the command line; use `CCINNMYSQL_PASSWORD`. Other launch arguments: `--tls disabled|preferred|required|verifyCA|verifyIdentity`, `--sql "…" --auto-run [--view grid|chart|plan]`, `--server overview|processlist|innodb|statements|replication|variables|status|users`, `--profile <saved name>`, `--duplicate-window` (once connected, opens a second window with the same connection), `--appearance light|dark`, and `--snapshot <file.png> --snapshot-delay <seconds> --quit-after-snapshot` (renders the key window off-screen without stealing focus or needing screen-recording permission; `--snapshot-window <title>` picks another one).
 
 ## Project layout
 

@@ -52,6 +52,7 @@ CcinnMysql puts those answers one click away, in a native SwiftUI/AppKit app wit
 - **SQL workbench** — syntax highlighting, context-aware completion (schemas, tables, columns, aliases, functions), `DELIMITER` support, automatic LIMIT for plain queries only, error underlining from `near '…' at line N`, history (credentials redacted), CSV/TSV/INSERT export and instant charts.
 - **Safe inline editing** — results from a single base table with a primary key (or a NOT NULL unique key) are editable: CcinnMysql generates the `UPDATE … WHERE <key> LIMIT 1`, shows it, and commits only when exactly one row matched.
 - **Connections** — Keychain secrets, TLS modes (disabled, preferred, required, verify CA, verify identity) with custom CA and client certificates, SSH tunnels through the system OpenSSH client, per-connection confirmation of writes.
+- **Multiple windows** — every window has its own connection, so you can put different servers side by side or keep two views of the same one. File ▸ New Window (⌘N) opens the connection screen; **New Window with This Connection** (⇧⌘N, or the toolbar's New Window button) opens the current server again with the password already in use, even for unsaved connections and passwords not in the Keychain; saved connections have **Open in New Window**. Closing a window disconnects only that window.
 - **MCP server** — let Claude Code, Codex, Claude Desktop or Cursor query the connections you allow, read-only by default.
 
 ## Compatibility
@@ -120,6 +121,8 @@ The project page, release notes and issue tracker are also in the **Help** menu 
 | **⌘.** | Cancel the running statement (`KILL QUERY`) |
 | **⌃Space** | Show completions |
 | **⌘T** | New query |
+| **⌘N** | New window (another server, or the same one) |
+| **⇧⌘N** | New window with this connection |
 | **⌥⌘1** / **⌥⌘2** | Server overview / Processlist |
 | **⇧⌘R** | Refresh schemas |
 | **⇧⌘D** | Disconnect |
