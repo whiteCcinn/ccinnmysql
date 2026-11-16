@@ -19,6 +19,8 @@ final class StatementOutcome: Identifiable {
     var results: [ResultSet] = []
     var errorMessage: String?
     var errorCode: Int?
+    /// The server's error, parsed once, off the main actor.
+    var serverError: SQLServerError?
     var limitApplied: Int?
     var isRunning = true
     var viewMode: ViewMode = .grid
@@ -127,7 +129,19 @@ final class ChartState {
 @Observable
 final class SQLTabModel {
     let title: String
-    var text: String
+    /// Edits made in the editor arrive through `editorDidEdit` first; any other assignment (History →
+    /// Open) replaces the text, which makes every server diagnostic stale.
+    var text: String {
+        didSet {
+            if editorEditPending {
+                editorEditPending = false
+                if lineIndexIsStale { rebuildLineIndex() }
+            } else {
+                textWasReplaced()
+            }
+            scheduleLint()
+        }
+    }
     var selection = NSRange(location: 0, length: 0)
     private(set) var database: String?
     private(set) var isInTransaction = false
@@ -135,7 +149,10 @@ final class SQLTabModel {
     var selectedOutcomeID: UUID?
     var isRunning = false
     var runStartedAt: Date?
-    var errorOffset: Int?
+    /// Errors of the last run, anchored to the statements that failed.
+    private(set) var serverDiagnostics: [SQLDiagnostic] = []
+    /// Local checks of the current text (refreshed shortly after typing stops).
+    private(set) var localDiagnostics: [SQLDiagnostic] = []
     var inspected: InspectedValue?
     var pendingConfirmation: PendingConfirmation?
     var showHistory = false
@@ -152,6 +169,24 @@ final class SQLTabModel {
     private let session: SQLSession
     private var runTask: Task<Void, Never>?
     private var stopRequested = false
+    private var lintTask: Task<Void, Never>?
+    private var editorEditPending = false
+    /// The session lexes strings with backslash escapes (sql_mode without NO_BACKSLASH_ESCAPES); read after
+    /// every statement, so local checks agree with the server.
+    @ObservationIgnored private var lintsWithBackslashEscapes = true
+    /// Line starts of `text`, maintained edit by edit (positions without scanning the text).
+    @ObservationIgnored private var lineIndex: SQLLineIndex
+    @ObservationIgnored private var lineIndexIsStale = false
+    /// Editor ranges of the statements in the running batch, by index; `nil` once a statement was edited.
+    private var runAnchors: [Range<Int>?] = []
+
+    /// A statement to execute: `sql` is sent as is; `editorOffset` is where its source starts in the
+    /// editor (nil when unknown) and `prefixLength` the units the app prepended (`EXPLAIN FORMAT=JSON `).
+    private struct PlannedStatement {
+        let sql: String
+        let editorOffset: Int?
+        var prefixLength = 0
+    }
 
     /// Rows kept per result (hard cap) and the default auto-limit for plain SELECTs.
     static let hardRowCap = 100_000
@@ -163,62 +198,153 @@ final class SQLTabModel {
     init(title: String, text: String, database: String?, workspace: WorkspaceModel) {
         self.title = title
         self.text = text
+        lineIndex = SQLLineIndex(text)
         self.database = database
         self.workspace = workspace
         session = workspace.client.openSession(database: database)
         self.selection = NSRange(location: (text as NSString).length, length: 0)
+        scheduleLint(after: .zero)
     }
 
     var selectedOutcome: StatementOutcome? {
         outcomes.first { $0.id == selectedOutcomeID } ?? outcomes.last
     }
 
+    // MARK: Diagnostics
+
+    /// Server and local diagnostics, in text order.
+    var diagnostics: [SQLDiagnostic] {
+        guard !localDiagnostics.isEmpty else { return serverDiagnostics }
+        guard !serverDiagnostics.isEmpty else { return localDiagnostics }
+        // Server first on ties, so the order is deterministic and the editor does not re-highlight needlessly.
+        return (serverDiagnostics + localDiagnostics).sorted {
+            ($0.range.lowerBound, $0.source == .server ? 0 : 1, $0.range.upperBound) < ($1.range.lowerBound, $1.source == .server ? 0 : 1, $1.range.upperBound)
+        }
+    }
+
+    /// The marker of a result's error, while it is still valid.
+    func serverDiagnostic(for outcome: StatementOutcome) -> SQLDiagnostic? {
+        serverDiagnostics.first { $0.origin == outcome.id }
+    }
+
+    /// Called by the editor before it writes the edited text: keeps markers, run anchors and the line
+    /// index on their text.
+    func editorDidEdit(_ edits: [SQLTextEdit]) {
+        editorEditPending = true
+        guard !edits.isEmpty else { return }
+        for edit in edits where !lineIndexIsStale {
+            if !lineIndex.apply(edit) { lineIndexIsStale = true }
+        }
+        let server = SQLDiagnosticTracker.apply(edits, to: serverDiagnostics)
+        if server != serverDiagnostics { serverDiagnostics = server }
+        let local = SQLDiagnosticTracker.apply(edits, to: localDiagnostics)
+        if local != localDiagnostics { localDiagnostics = local }
+        if !runAnchors.isEmpty { runAnchors = SQLDiagnosticTracker.apply(edits, to: runAnchors) }
+    }
+
+    /// Selects a diagnostic's text in the editor (which scrolls to it).
+    func reveal(_ diagnostic: SQLDiagnostic) {
+        let length = (text as NSString).length
+        let lower = min(max(0, diagnostic.range.lowerBound), length)
+        let upper = min(max(lower, diagnostic.range.upperBound), length)
+        selection = NSRange(location: lower, length: upper - lower)
+    }
+
+    /// 1-based line and column of an offset in `text` (O(log lines + line length)).
+    func position(of offset: Int) -> SQLTextPosition {
+        lineIndex.position(of: offset, in: text as NSString)
+    }
+
+    private func rebuildLineIndex() {
+        lineIndex = SQLLineIndex(text)
+        lineIndexIsStale = false
+    }
+
+    private func textWasReplaced() {
+        rebuildLineIndex()
+        if !serverDiagnostics.isEmpty { serverDiagnostics = [] }
+        if !localDiagnostics.isEmpty { localDiagnostics = [] }
+        runAnchors = runAnchors.map { _ in nil }
+    }
+
+    /// Re-checks the text off the main actor once typing pauses; a newer edit cancels the check.
+    private func scheduleLint(after delay: Duration = .milliseconds(300)) {
+        lintTask?.cancel()
+        let snapshot = text
+        let backslashEscapes = lintsWithBackslashEscapes
+        lintTask = Task { [weak self] in
+            if delay > .zero { try? await Task.sleep(for: delay) }
+            guard !Task.isCancelled else { return }
+            let found = await Task.detached(priority: .utility) { SQLLinter.diagnose(snapshot, backslashEscapes: backslashEscapes) }.value
+            // Any edit since the snapshot cancelled this task (both run on the main actor).
+            guard let self, !Task.isCancelled else { return }
+            if found != self.localDiagnostics { self.localDiagnostics = found }
+        }
+    }
+
+    /// Follows the session's NO_BACKSLASH_ESCAPES (it can change with `SET sql_mode`).
+    private func refreshLintMode() async {
+        let backslashEscapes = !(await session.noBackslashEscapes)
+        guard backslashEscapes != lintsWithBackslashEscapes else { return }
+        lintsWithBackslashEscapes = backslashEscapes
+        scheduleLint(after: .zero)
+    }
+
     // MARK: Running
 
     /// Selection if any, otherwise the statement under the cursor.
     func runCurrent() {
-        let nsText = text as NSString
-        if selection.length > 0, NSMaxRange(selection) <= nsText.length {
-            let selected = nsText.substring(with: selection)
-            run(SQLStatementSplitter.split(selected).map { ($0.text, selection.location + $0.range.lowerBound) })
+        if let selected = selectedText {
+            run(SQLStatementSplitter.split(selected).map { PlannedStatement(sql: $0.text, editorOffset: selection.location + $0.range.lowerBound) })
             return
         }
         guard let statement = SQLStatementSplitter.statement(at: selection.location, in: text) else { return }
-        run([(statement.text, statement.range.lowerBound)])
+        run([PlannedStatement(sql: statement.text, editorOffset: statement.range.lowerBound)])
     }
 
     func runAll() {
-        run(SQLStatementSplitter.split(text).map { ($0.text, $0.range.lowerBound) })
+        run(SQLStatementSplitter.split(text).map { PlannedStatement(sql: $0.text, editorOffset: $0.range.lowerBound) })
     }
 
     /// EXPLAIN of the current statement: FORMAT=JSON (visual plan), or `analyze` to execute it and measure
     /// (EXPLAIN ANALYZE on MySQL 8.0.18+, ANALYZE FORMAT=JSON on MariaDB) — only for queries, never for writes.
     func explain(analyze: Bool) {
-        guard let statement = selection.length > 0
-            ? SQLStatementSplitter.split((text as NSString).substring(with: selection)).first
-            : SQLStatementSplitter.statement(at: selection.location, in: text) else { return }
+        let selected = selectedText
+        guard let statement = selected.map({ SQLStatementSplitter.split($0).first })
+            ?? SQLStatementSplitter.statement(at: selection.location, in: text) else { return }
+        let base = selected == nil ? 0 : selection.location
         let body = statement.text
+        let editorOffset = base + statement.range.lowerBound
         let kind = SQLStatementKind.of(body)
-        if kind == .explain {
-            run([(body, nil)])
-            return
+        guard kind != .explain else {
+            return run([PlannedStatement(sql: body, editorOffset: editorOffset)])
         }
         let info = workspace.serverInfo
+        let prefix: String
         if analyze {
             guard kind == .query else {
                 workspace.showToast("EXPLAIN ANALYZE runs the statement; it is only offered for queries.", isError: true)
                 return
             }
             if info.supportsExplainAnalyze {
-                run([("EXPLAIN ANALYZE " + body, nil)])
+                prefix = "EXPLAIN ANALYZE "
             } else if info.supportsAnalyzeJSON {
-                run([("ANALYZE FORMAT=JSON " + body, nil)])
+                prefix = "ANALYZE FORMAT=JSON "
             } else {
                 workspace.showToast("This server does not support EXPLAIN ANALYZE (MySQL 8.0.18+ or MariaDB 10.1+).", isError: true)
+                return
             }
-            return
+        } else {
+            prefix = info.supportsExplainJSON ? "EXPLAIN FORMAT=JSON " : "EXPLAIN "
         }
-        run([((info.supportsExplainJSON ? "EXPLAIN FORMAT=JSON " : "EXPLAIN ") + body, nil)])
+        run([PlannedStatement(sql: prefix + body, editorOffset: editorOffset, prefixLength: prefix.utf16.count)])
+    }
+
+    /// The selected text, when the selection is non-empty and inside the text.
+    private var selectedText: String? {
+        let nsText = text as NSString
+        guard selection.length > 0, selection.location >= 0, NSMaxRange(selection) <= nsText.length else { return nil }
+        return nsText.substring(with: selection)
     }
 
     /// Clears session variables and temporary tables (COM_RESET_CONNECTION or a reconnect).
@@ -243,9 +369,12 @@ final class SQLTabModel {
     }
 
     /// Runs statements sequentially; stops at the first error.
-    private func run(_ statements: [(text: String, offset: Int?)]) {
+    private func run(_ statements: [PlannedStatement]) {
         guard !isRunning, !statements.isEmpty else { return }
-        errorOffset = nil
+        serverDiagnostics = []
+        runAnchors = statements.map { statement in
+            statement.editorOffset.map { $0..<($0 + max(0, statement.sql.utf16.count - statement.prefixLength)) }
+        }
         stopRequested = false
         isRunning = true
         runStartedAt = Date()
@@ -254,8 +383,9 @@ final class SQLTabModel {
             defer {
                 isRunning = false
                 runStartedAt = nil
+                runAnchors = []
             }
-            let mutations = statements.map(\.text).filter { SQLStatementKind.of($0).isMutation }
+            let mutations = statements.map(\.sql).filter { SQLStatementKind.of($0).isMutation }
             if workspace.profile.confirmMutations, !mutations.isEmpty {
                 let confirmed = await withCheckedContinuation { continuation in
                     pendingConfirmation = PendingConfirmation(statements: mutations, continuation: continuation)
@@ -263,7 +393,7 @@ final class SQLTabModel {
                 guard confirmed else { return }
             }
             for (index, statement) in statements.enumerated() {
-                let succeeded = await execute(statement.text, index: index, offset: statement.offset)
+                let succeeded = await execute(statement, index: index)
                 if !succeeded || Task.isCancelled || stopRequested { break }
             }
         }
@@ -274,15 +404,18 @@ final class SQLTabModel {
         pendingConfirmation = nil
     }
 
-    private func execute(_ sql: String, index: Int, offset: Int?) async -> Bool {
+    private func execute(_ statement: PlannedStatement, index: Int) async -> Bool {
+        let sql = statement.sql
         let kind = SQLStatementKind.of(sql)
         var executed = sql
         var limitApplied: Int?
+        var mapping = SQLExecutedTextMapping(prefixLength: statement.prefixLength)
         if kind == .query, autoLimit > 0 {
             let outcome = AutoLimit.apply(to: sql, limit: autoLimit)
             if outcome.applied {
                 executed = outcome.sql
                 limitApplied = autoLimit
+                mapping.insertion = outcome.insertion
             }
         }
         let outcome = StatementOutcome(index: index, sql: sql, executedSQL: executed, kind: kind)
@@ -293,6 +426,7 @@ final class SQLTabModel {
         let clock = ContinuousClock()
         let started = clock.now
         var historyEntry = QueryHistoryEntry(sql: sql, database: database, durationMilliseconds: 0)
+        var failure: (message: String, code: Int?)?
         do {
             let results = try await session.run(executed, limits: RowLimits(maxRows: Self.hardRowCap))
             outcome.results = results
@@ -309,18 +443,47 @@ final class SQLTabModel {
             outcome.errorMessage = describe(error)
             outcome.errorCode = (error as? MySQLError)?.code
             historyEntry.errorMessage = outcome.errorMessage
-            if let offset, let message = outcome.errorMessage, let inner = SQLErrorLocator.offset(in: executed, message: message),
-               inner <= (sql as NSString).length {
-                errorOffset = offset + inner
-            }
+            failure = ((error as? MySQLError)?.message ?? describe(error), outcome.errorCode)
         }
-        isInTransaction = await session.isInTransaction
+        // Measured before locating the error, which is not part of the statement's run time.
         let elapsed = clock.now - started
         outcome.durationMilliseconds = Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15
-        outcome.isRunning = false
         historyEntry.durationMilliseconds = outcome.durationMilliseconds
+        isInTransaction = await session.isInTransaction
+        if let failure {
+            let (parsed, diagnostic) = await diagnose(failure.message, code: failure.code, statement: statement, executed: executed,
+                                                      mapping: mapping, index: index, origin: outcome.id)
+            outcome.serverError = parsed
+            if let diagnostic { serverDiagnostics.append(diagnostic) }
+        }
+        outcome.isRunning = false
         await workspace.history.append(historyEntry)
+        await refreshLintMode()
         return outcome.errorMessage == nil
+    }
+
+    /// Parses a failure and, unless the statement was edited while it ran, its editor marker. Both run
+    /// off the main actor: locating lexes the statement, which can be large.
+    private func diagnose(_ message: String, code: Int?, statement: PlannedStatement, executed: String, mapping: SQLExecutedTextMapping,
+                          index: Int, origin: UUID) async -> (SQLServerError, SQLDiagnostic?) {
+        let wantsMarker = runAnchors.indices.contains(index) && runAnchors[index] != nil
+        let sql = statement.sql
+        let prefixLength = statement.prefixLength
+        let (parsed, located) = await Task.detached(priority: .userInitiated) { () -> (SQLServerError, (range: Range<Int>, message: String)?) in
+            let parsed = SQLServerError.parse(message, code: code)
+            guard wantsMarker else { return (parsed, nil) }
+            let units = Array(sql.utf16)
+            let sourceUnits = units[min(max(0, prefixLength), units.count)...]
+            let source = String(decoding: sourceUnits, as: UTF16.self)
+            guard let range = SQLErrorLocator.range(in: source, executed: executed, mapping: mapping, error: parsed) else { return (parsed, nil) }
+            let marked = String(decoding: Array(source.utf16)[range], as: UTF16.self)
+            return (parsed, (range, parsed.markerMessage(for: marked)))
+        }.value
+        // Re-read the anchor: the user may have typed while the statement was being located.
+        guard let located, runAnchors.indices.contains(index), let anchor = runAnchors[index],
+              located.range.upperBound <= anchor.count else { return (parsed, nil) }
+        let marked = (anchor.lowerBound + located.range.lowerBound)..<(anchor.lowerBound + located.range.upperBound)
+        return (parsed, SQLDiagnostic(range: marked, scope: anchor, severity: .error, source: .server, message: located.message, origin: origin))
     }
 
     private func refreshSidebar(after sql: String) {
@@ -466,6 +629,7 @@ final class SQLTabModel {
 
     func close() {
         runTask?.cancel()
+        lintTask?.cancel()
         if let pendingConfirmation { pendingConfirmation.continuation.resume(returning: false) }
         pendingConfirmation = nil
         let session = session

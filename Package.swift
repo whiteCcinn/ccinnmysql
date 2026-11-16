@@ -29,6 +29,8 @@ let package = Package(
         .testTarget(name: "CcinnMysqlKitTests", dependencies: ["MySQLKit", "CcinnMysqlKit"], resources: [.copy("Fixtures")],
                     swiftSettings: settings),
         .testTarget(name: "IntegrationTests", dependencies: ["MySQLWire", "MySQLKit", "CcinnMysqlKit"], swiftSettings: settings),
+        // AppKit behaviour of the app's views (editor text storage, input methods).
+        .testTarget(name: "CcinnMysqlAppTests", dependencies: ["CcinnMysql", "CcinnMysqlKit"], swiftSettings: settings),
     ],
     swiftLanguageModes: [.v6]
 )
