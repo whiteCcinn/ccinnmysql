@@ -79,6 +79,33 @@ final class WindowSession {
         phase = .connecting(name: name, status: status)
     }
 
+    /// Connects a window opened by a request of this process. Without a handed-off connection (no request, or a
+    /// request macOS restored after a relaunch) nothing happens and the caller takes the File ▸ New Window path.
+    /// - Returns: whether the request carried a connection (now opening).
+    @discardableResult
+    func connect(_ request: WindowRequest?, store: ProfileStore) -> Bool {
+        guard let connection = Self.handoff.take(request) else { return false }
+        connect(profile: connection.profile, store: store, password: connection.password)
+        return true
+    }
+
+    /// A request for another window connected like this one: the same profile and the password in use, so unsaved
+    /// connections and passwords not in the Keychain work too. Nil while not connected.
+    func duplicateRequest() -> WindowRequest? {
+        guard let workspace else { return nil }
+        let connection = WindowConnection(profile: workspace.profile, password: workspace.client.configuration.password)
+        return Self.handoff.request(profileID: workspace.profile.id, payload: connection)
+    }
+
+    /// A request for a new window that connects to a saved profile, reading its secrets from the Keychain as
+    /// Connect does.
+    static func request(opening profile: ConnectionProfile) -> WindowRequest {
+        handoff.request(profileID: profile.id, payload: WindowConnection(profile: profile, password: nil))
+    }
+
+    /// Connections handed to windows this process opens (see `WindowHandoff`).
+    private static let handoff = WindowHandoff<WindowConnection>()
+
     func cancelConnecting() {
         connectTask?.cancel()
         connectTask = nil
@@ -93,6 +120,13 @@ final class WindowSession {
         workspace?.shutdown()
         phase = .connections
     }
+}
+
+/// The connection a new window opens: a profile and, when duplicating, the password in use (`nil` = Keychain).
+/// The SSH secret and the client-certificate passphrase always come from the Keychain: only saved profiles have them.
+struct WindowConnection {
+    let profile: ConnectionProfile
+    let password: String?
 }
 
 /// User-facing text for any error.
