@@ -169,6 +169,13 @@ public final class SSHTunnel: Sendable {
             "-o", "StrictHostKeyChecking=accept-new",
             "-o", "ConnectTimeout=\(max(1, connectTimeout))",
             "-o", "NumberOfPasswordPrompts=1",
+            // Never a shared master (`ControlMaster auto` in ~/.ssh/config): closing this window would cut the other
+            // windows and terminal sessions multiplexed over it. Never a client of one either: with a ControlPath, ssh
+            // hands the forward to a master the user already runs, which then owns the port (still open after the tunnel
+            // is closed, one more per connect) and authenticates instead of this profile. Only this ssh is affected; the
+            // user's own sessions keep their masters.
+            "-o", "ControlMaster=no",
+            "-o", "ControlPath=none",
             "-L", "127.0.0.1:\(localPort):\(remoteHost):\(remote.port)",
             "-p", String(configuration.port),
         ]
