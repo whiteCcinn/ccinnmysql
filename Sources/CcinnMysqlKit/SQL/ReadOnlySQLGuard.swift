@@ -41,6 +41,27 @@ public enum ReadOnlySQLGuard {
         guard statements.count == 1 else { return "Only one statement can be run at a time; send statements separately." }
         let lexer = SQLLexer(statement.text)
         let all = lexer.tokens()
+        // The lexer is a security boundary: wherever servers or sessions could read the text differently, reject.
+        // A backslash in a string ends it early under NO_BACKSLASH_ESCAPES (and in an ANSI_QUOTES name): what is a
+        // string in one mode can be `INTO OUTFILE` or a second statement in the other.
+        let unescaped = SQLLexer(statement.text, backslashEscapes: false)
+        if SQLStatementSplitter.split(sql, backslashEscapes: false).map(\.range) != statements.map(\.range)
+            || unescaped.tokens().map(\.range) != all.map(\.range) {
+            return "A backslash in a string is read differently depending on NO_BACKSLASH_ESCAPES; write a quote inside a string as '' instead."
+        }
+        // `\N` is NULL on MariaDB, which ends it after the N (`\Nlock` is NULL LOCK), and an error on MySQL 8; any `\`
+        // outside strings and quoted names is read differently by different servers.
+        if lexer.containsBareBackslash(all) {
+            return "A backslash outside a string (such as \\N) is read differently by MySQL and MariaDB; write NULL instead."
+        }
+        // A `;` left inside the statement (after a DELIMITER command): the server would see more than one statement.
+        if all.contains(where: { $0.kind == .punctuation && lexer.text(of: $0) == ";" }) {
+            return "Only one statement can be run at a time; send statements separately."
+        }
+        // A literal the server rejects while lexing (`1.e`, `x'4'`): where its tokens end is guesswork.
+        if lexer.containsMalformedLiteral(all) {
+            return "The statement contains a number or hexadecimal literal the server cannot read."
+        }
         if all.contains(where: { $0.kind == .executableComment }) {
             return "Executable comments (/*! … */) are not allowed in read-only mode."
         }

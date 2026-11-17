@@ -165,7 +165,7 @@ struct ConnectingView: View {
 /// `CcinnMysql --connect host:port [--user u] [--database db] [--tls disabled|preferred|required|verifyCA|verifyIdentity]
 ///  [--object schema.name] [--section overview|columns|indexes|foreign|partitions|insights|ddl|data] [--sql "…"] [--auto-run]
 ///  [--view grid|chart|plan] [--server overview|processlist|innodb|statements|replication|variables|status|users] [--profile name]
-///  [--duplicate-window] [--appearance light|dark]`. The password comes from `CCINNMYSQL_PASSWORD` (never the command line).
+///  [--duplicate-window] [--format] [--appearance light|dark]`. The password comes from `CCINNMYSQL_PASSWORD` (never the command line).
 /// Applied once per process, in the first window opened without a connection request.
 @MainActor
 enum LaunchArguments {
@@ -217,6 +217,11 @@ enum LaunchArguments {
                 }
                 if let sql = value("--sql") {
                     let model = workspace.openSQL(text: sql.replacingOccurrences(of: "\\n", with: "\n"), database: value("--database"))
+                    if arguments.contains("--format") {
+                        try? await Task.sleep(for: .milliseconds(300)) // let the editor attach so the edit is undoable
+                        model.formatSQL()
+                        for _ in 0..<100 where model.isFormatting { try? await Task.sleep(for: .milliseconds(20)) }
+                    }
                     if arguments.contains("--auto-run") {
                         model.runAll()
                         if let view = value("--view"), let mode = StatementOutcome.ViewMode.allCases.first(where: { $0.rawValue.lowercased() == view.lowercased() }) {
@@ -294,6 +299,8 @@ enum AppearancePreference: String, CaseIterable, Identifiable {
 struct SettingsView: View {
     @AppStorage("appearance") private var appearance = AppearancePreference.system.rawValue
     @AppStorage("autoLimit") private var autoLimit = 1000
+    @AppStorage("sqlFormatKeywordCase") private var formatKeywordCase = SQLFormatOptions.KeywordCase.upper.rawValue
+    @AppStorage("sqlFormatIndent") private var formatIndent = 2
 
     var body: some View {
         Form {
@@ -303,6 +310,16 @@ struct SettingsView: View {
             Picker("Automatic LIMIT for SELECT", selection: $autoLimit) {
                 Text("None").tag(0)
                 ForEach([100, 500, 1000, 5000, 10_000, 50_000], id: \.self) { Text($0.formatted()).tag($0) }
+            }
+            Picker("Format SQL: keyword case", selection: $formatKeywordCase) {
+                Text("UPPER").tag(SQLFormatOptions.KeywordCase.upper.rawValue)
+                Text("lower").tag(SQLFormatOptions.KeywordCase.lower.rawValue)
+                Text("Unchanged").tag(SQLFormatOptions.KeywordCase.preserve.rawValue)
+            }
+            .help("Applies to reserved keywords only; names and functions always keep their case.")
+            Picker("Format SQL: indent", selection: $formatIndent) {
+                Text("2 spaces").tag(2)
+                Text("4 spaces").tag(4)
             }
             LabeledContent("Saved connections") {
                 Button("Show in Finder") {
@@ -348,6 +365,11 @@ struct AppCommands: Commands {
             Button("Disconnect") { session?.disconnect() }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
                 .disabled(session?.workspace == nil)
+        }
+        CommandGroup(after: .textEditing) {
+            Button("Format SQL") { session?.workspace?.selectedSQL?.formatSQL() }
+                .keyboardShortcut("l", modifiers: [.command, .option])
+                .disabled(session?.workspace?.selectedSQL == nil)
         }
         CommandMenu("Server") {
             Button("Refresh Schemas") { session?.workspace?.refreshAll() }

@@ -15,8 +15,26 @@ public struct SQLStatement: Sendable, Equatable {
 public enum SQLStatementSplitter {
     /// Splits a script on its delimiter (`;`, or what a `DELIMITER` line sets, as in the `mysql` client) outside
     /// strings, quoted identifiers and comments. `DELIMITER` lines themselves are not statements; statements made
-    /// only of comments/whitespace are dropped. Linear in the script length.
-    public static func split(_ script: String) -> [SQLStatement] {
+    /// only of comments/whitespace are dropped. Linear in the script length. `backslashEscapes`: whether a backslash
+    /// escapes the next character in strings (false under NO_BACKSLASH_ESCAPES); `ansiQuotes`: `"…"` is a quoted name
+    /// (ANSI_QUOTES), in which a backslash never escapes.
+    public static func split(_ script: String, backslashEscapes: Bool = true, ansiQuotes: Bool = false) -> [SQLStatement] {
+        scan(script, mode: SQLLexingMode(backslashEscapes: backslashEscapes, ansiQuotes: ansiQuotes)).statements
+    }
+
+    public static func split(_ script: String, mode: SQLLexingMode) -> [SQLStatement] {
+        scan(script, mode: mode).statements
+    }
+
+    /// Whether the script has a client `DELIMITER` command: at the start of a line and of a statement (no statement text
+    /// before it), followed by its delimiter, as the `mysql` client and `split` read it.
+    public static func usesDelimiterCommands(_ script: String, mode: SQLLexingMode = .standard) -> Bool {
+        scan(script, mode: mode).delimiterCommands > 0
+    }
+
+    private static func scan(_ script: String, mode: SQLLexingMode) -> (statements: [SQLStatement], delimiterCommands: Int) {
+        let backslashEscapes = mode.backslashEscapes
+        var delimiterCommands = 0
         let units = Array(script.utf16)
         var statements: [SQLStatement] = []
         var delimiter: [UInt16] = [0x3B]
@@ -34,6 +52,7 @@ public enum SQLStatementSplitter {
             // A DELIMITER command: only at the start of a line, before any statement text.
             if (unit == 0x44 || unit == 0x64), significantRange(units, start..<index) == nil, isLineStart(units, index),
                let (newDelimiter, lineEnd) = delimiterCommand(units, at: index) {
+                delimiterCommands += 1
                 if !newDelimiter.isEmpty { delimiter = newDelimiter }
                 index = lineEnd
                 start = lineEnd
@@ -47,7 +66,7 @@ public enum SQLStatementSplitter {
             }
             switch unit {
             case 0x27, 0x22: // ' "
-                index = endOfQuoted(units, from: index, quote: unit, backslash: true)
+                index = endOfQuoted(units, from: index, quote: unit, backslash: backslashEscapes && !(unit == 0x22 && mode.ansiQuotes))
             case 0x60: // `
                 index = endOfQuoted(units, from: index, quote: unit, backslash: false)
             case 0x23: // #
@@ -61,13 +80,13 @@ public enum SQLStatementSplitter {
             }
         }
         flush(count)
-        return statements
+        return (statements, delimiterCommands)
     }
 
     /// The statement containing `offset` (UTF-16). A cursor right after a statement's delimiter or in the
     /// blank space after it belongs to that statement.
-    public static func statement(at offset: Int, in script: String) -> SQLStatement? {
-        let statements = split(script)
+    public static func statement(at offset: Int, in script: String, mode: SQLLexingMode = .standard) -> SQLStatement? {
+        let statements = split(script, mode: mode)
         guard !statements.isEmpty else { return nil }
         if let containing = statements.first(where: { $0.range.lowerBound <= offset && offset <= $0.range.upperBound }) {
             return containing

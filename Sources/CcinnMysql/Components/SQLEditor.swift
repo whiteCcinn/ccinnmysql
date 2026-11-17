@@ -4,6 +4,44 @@ import SwiftUI
 
 typealias CompletionProvider = @MainActor (_ text: String, _ cursor: Int) async -> CompletionResult
 
+/// Lets a model read the editor's live text and change it the way typing does: one undoable edit that the editor's
+/// edit tracking (and so the diagnostics) sees.
+@MainActor
+final class SQLEditorController {
+    weak var textView: SQLTextView?
+
+    /// The editor's own text and selection. The model's binding can lag behind them (an input method composing, edits
+    /// not yet reported), so work that edits the text starts from these.
+    struct Snapshot {
+        let text: String
+        let selection: NSRange
+        let isComposing: Bool
+    }
+
+    /// What became of a replacement; only `replaced` changed the text.
+    enum ReplaceOutcome: Equatable {
+        case replaced
+        /// An input method is composing: it owns the text until it commits.
+        case composing
+        /// The editor no longer shows exactly the text the edit was made for.
+        case textChanged
+        /// The editor does not accept edits.
+        case readOnly
+        case noEditor
+    }
+
+    var snapshot: Snapshot? {
+        textView.map { Snapshot(text: $0.string, selection: $0.selectedRange(), isComposing: $0.hasMarkedText()) }
+    }
+
+    /// Replaces `range` of `source` and selects `selection`, only if the editor still shows exactly `source`.
+    @discardableResult
+    func replace(_ range: NSRange, of source: String, with replacement: String, actionName: String, selecting selection: NSRange) -> ReplaceOutcome {
+        guard let textView else { return .noEditor }
+        return textView.replace(range, of: source, with: replacement, actionName: actionName, selecting: selection)
+    }
+}
+
 /// SQL editor on NSTextView: lexer-driven highlighting, line numbers, current-statement highlight,
 /// diagnostics (underlines and inline messages), bracket/quote pairing, comment toggling and
 /// context-aware completion.
@@ -20,6 +58,9 @@ struct SQLEditor: NSViewRepresentable {
     /// Edits made by the user, reported before `text` is updated (see `SQLTabModel.editorDidEdit`).
     var onEdit: (@MainActor ([SQLTextEdit]) -> Void)?
     var focusOnAppear = false
+    var controller: SQLEditorController?
+    /// How the session lexes SQL (NO_BACKSLASH_ESCAPES, ANSI_QUOTES): highlighting and statements follow it.
+    var lexingMode: SQLLexingMode = .standard
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -70,6 +111,7 @@ struct SQLEditor: NSViewRepresentable {
         }
 
         context.coordinator.textView = textView
+        controller?.textView = textView
         textView.string = text
         textView.textStorage?.delegate = context.coordinator
         context.coordinator.diagnostics = diagnostics
@@ -168,8 +210,10 @@ struct SQLEditor: NSViewRepresentable {
         /// edits wait to be reported. Replacing the text then would destroy the composition, and the
         /// binding's diagnostics describe older text.
         func update(from editor: SQLEditor) {
+            let modeChanged = editor.lexingMode != parent.lexingMode
             parent = editor
             guard let textView else { return }
+            if modeChanged { rehighlight() }
             textView.isEditable = editor.isEditable
             if textView.hasMarkedText() { return }
             if !pendingEdits.isEmpty {
@@ -259,9 +303,9 @@ struct SQLEditor: NSViewRepresentable {
             let text = textView.string
             let length = (text as NSString).length
             if length <= Self.highlightLimit {
-                let lexer = SQLLexer(text)
+                let lexer = SQLLexer(text, mode: parent.lexingMode)
                 tokens = lexer.tokens()
-                statements = SQLStatementSplitter.split(text)
+                statements = SQLStatementSplitter.split(text, mode: parent.lexingMode)
                 var functions = Set<Int>()
                 for index in tokens.indices.dropLast() where tokens[index].kind == .identifier {
                     let next = tokens[index + 1]
@@ -543,6 +587,40 @@ final class SQLTextView: NSTextView {
             return
         }
         super.keyDown(with: event)
+    }
+
+    /// Replaces `range` with `replacement` as a single undo step (⌘Z restores the original), then selects
+    /// `selection`. Goes through `shouldChangeText` / `didChangeText` like typing, so edit tracking sees it.
+    ///
+    /// Refused (nothing changes, and the outcome says why) while an input method composes, which must never be
+    /// interrupted, and when the live text is not exactly `source`, the text the edit was computed from. The comparison is by UTF-16 unit: Swift's `==` also
+    /// equates canonically equivalent texts (`é` and `e` + U+0301), whose offsets differ.
+    @discardableResult
+    func replace(_ range: NSRange, of source: String, with replacement: String, actionName: String,
+                 selecting selection: NSRange) -> SQLEditorController.ReplaceOutcome {
+        guard isEditable else { return .readOnly }
+        guard !hasMarkedText() else { return .composing }
+        guard let textStorage, textStorage.mutableString.isEqual(to: source) else { return .textChanged }
+        let length = textStorage.length
+        // Not NSMaxRange: `location + length` overflows (and traps) for NSNotFound.
+        guard range.location >= 0, range.length >= 0, range.location <= length, range.length <= length - range.location else {
+            return .textChanged
+        }
+        breakUndoCoalescing()
+        undoManager?.beginUndoGrouping()
+        defer {
+            undoManager?.endUndoGrouping()
+            breakUndoCoalescing()
+        }
+        guard shouldChangeText(in: range, replacementString: replacement) else { return .readOnly }
+        textStorage.replaceCharacters(in: range, with: NSAttributedString(string: replacement, attributes: typingAttributes))
+        didChangeText()
+        undoManager?.setActionName(actionName)
+        let updated = (string as NSString).length
+        let clamped = NSRange(location: min(selection.location, updated), length: min(selection.length, max(0, updated - min(selection.location, updated))))
+        setSelectedRange(clamped)
+        scrollRangeToVisible(clamped)
+        return .replaced
     }
 
     override func complete(_ sender: Any?) {

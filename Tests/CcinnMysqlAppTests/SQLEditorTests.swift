@@ -55,6 +55,225 @@ private final class EditorHarness {
 @Suite("SQL editor", .serialized)
 @MainActor
 struct SQLEditorTests {
+    @Test func formattingIsOneUndoableEditThatEditTrackingSees() throws {
+        let original = "select a, b from t"
+        let harness = EditorHarness(original)
+        let undo = try #require(harness.textView.undoManager)
+        undo.groupsByEvent = false
+        let formatted = try #require(SQLFormatter.format(original))
+        let length = (original as NSString).length
+        undo.beginUndoGrouping()
+        #expect(harness.textView.replace(NSRange(location: 0, length: length), of: original, with: formatted, actionName: "Format SQL",
+                                         selecting: NSRange(location: 3, length: 0)) == .replaced)
+        undo.endUndoGrouping()
+        #expect(harness.textView.string == formatted)
+        #expect(harness.text == formatted, "the binding is updated like typing")
+        #expect(!harness.reportedEdits.isEmpty, "edit tracking sees the replacement")
+        #expect(harness.textView.selectedRange() == NSRange(location: 3, length: 0))
+        #expect(undo.undoActionName == "Format SQL")
+        undo.undo()
+        #expect(harness.textView.string == original, "one ⌘Z restores the original")
+        // Out-of-date ranges are refused instead of trapping, NSNotFound included.
+        #expect(harness.textView.replace(NSRange(location: 0, length: 10_000), of: original, with: "x", actionName: "Format SQL",
+                                         selecting: NSRange(location: 0, length: 0)) == .textChanged)
+        #expect(harness.textView.replace(NSRange(location: NSNotFound, length: 1), of: original, with: "x", actionName: "Format SQL",
+                                         selecting: NSRange(location: 0, length: 0)) == .textChanged)
+    }
+
+    // Review (2): a format result is never applied while an input method composes (the composition would be committed or
+    // destroyed), nor to a text other than the one it was computed from.
+    @Test func formattingNeverInterruptsAComposition() throws {
+        let original = "select a, b from t"
+        let harness = EditorHarness(original)
+        let formatted = try #require(SQLFormatter.format(original))
+        harness.textView.setSelectedRange(NSRange(location: (original as NSString).length, length: 0))
+        harness.textView.setMarkedText(" ni", selectedRange: NSRange(location: 3, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(harness.textView.hasMarkedText())
+        let controller = SQLEditorController()
+        controller.textView = harness.textView
+        #expect(controller.snapshot?.isComposing == true)
+        let live = try #require(controller.snapshot?.text)
+        #expect(controller.replace(NSRange(location: 0, length: (live as NSString).length), of: live, with: formatted, actionName: "Format SQL",
+                                   selecting: NSRange(location: 0, length: 0)) == .composing)
+        #expect(harness.textView.hasMarkedText(), "the composition goes on")
+        #expect(harness.textView.string == original + " ni")
+    }
+
+    // Review (2): the live text is compared unit by unit. `é` and `e` + U+0301 are equal for Swift's `==` but their
+    // offsets differ, so an edit computed for one must not be applied to the other.
+    @Test func formattingAppliesOnlyToTheTextItWasComputedFrom() throws {
+        let decomposed = "select 'e\u{301}' from t"
+        let precomposed = "select '\u{E9}' from t"
+        #expect(decomposed == precomposed, "canonically equivalent")
+        let harness = EditorHarness(decomposed)
+        let controller = SQLEditorController()
+        #expect(controller.replace(NSRange(location: 0, length: 1), of: decomposed, with: "S", actionName: "Format SQL",
+                                   selecting: NSRange(location: 0, length: 0)) == .noEditor)
+        controller.textView = harness.textView
+        let formatted = try #require(SQLFormatter.format(precomposed))
+        #expect(controller.replace(NSRange(location: 0, length: (precomposed as NSString).length), of: precomposed, with: formatted,
+                                   actionName: "Format SQL", selecting: NSRange(location: 0, length: 0)) == .textChanged)
+        #expect(harness.textView.string == decomposed)
+        #expect(controller.replace(NSRange(location: 0, length: 6), of: decomposed, with: "SELECT", actionName: "Format SQL",
+                                   selecting: NSRange(location: 0, length: 0)) == .replaced)
+        #expect(harness.textView.string.hasPrefix("SELECT 'e\u{301}'"))
+    }
+
+    // Formatting moves a server marker on a later statement instead of dropping it, like any edit before it.
+    @Test func formattingAStatementKeepsMarkersOfOthersOnTheirText() throws {
+        let text = "select a,b from t;\nSELECT 1 FORM shop.orders"
+        let marked = (text as NSString).range(of: "shop")
+        let scope = (text as NSString).range(of: "SELECT 1 FORM shop.orders")
+        let failure = SQLDiagnostic(range: marked.location..<NSMaxRange(marked), scope: scope.location..<NSMaxRange(scope),
+                                    severity: .error, source: .server, message: "Syntax error near 'shop'")
+        let harness = EditorHarness(text, diagnostics: [failure])
+        let first = (text as NSString).range(of: "select a,b from t")
+        let edit = try #require(SQLFormatter.formatSelection(in: text, range: first))
+        #expect(edit.range == first)
+        #expect(harness.textView.replace(edit.range, of: text, with: edit.replacement, actionName: "Format SQL", selecting: first) == .replaced)
+        let moved = try #require(harness.coordinator.diagnostics.first)
+        #expect((harness.textView.string as NSString).substring(with: NSRange(location: moved.range.lowerBound, length: moved.range.count)) == "shop")
+    }
+
+    // MARK: Format SQL feedback
+
+    private func formatting(_ harness: EditorHarness?) -> SQLFormatting {
+        let controller = SQLEditorController()
+        controller.textView = harness?.textView
+        return SQLFormatting(editor: controller)
+    }
+
+    private func detached(_ text: String, store: @escaping @MainActor (String, String, NSRange) -> Bool = { _, _, _ in true }) -> SQLFormatting.Detached {
+        SQLFormatting.Detached(text: text, selection: NSRange(location: 0, length: 0), store: store)
+    }
+
+    // Final review: a format that changes nothing says why in the status bar instead of returning silently.
+    @Test func aFormattedTextLeavesNoNotice() async throws {
+        let harness = EditorHarness("select a, b from t")
+        let formatting = formatting(harness)
+        let task = try #require(formatting.start(options: SQLFormatOptions(), detached: detached("")))
+        #expect(formatting.isRunning)
+        await task.value
+        #expect(!formatting.isRunning)
+        #expect(harness.textView.string == "SELECT\n  a,\n  b\nFROM t")
+        #expect(formatting.notice == nil)
+    }
+
+    @Test func aTextThatCannotBeProvenSaysSo() async throws {
+        let harness = EditorHarness("select case when a then 1.end")
+        let formatting = formatting(harness)
+        await formatting.start(options: SQLFormatOptions(), detached: detached(""))?.value
+        #expect(harness.textView.string == "select case when a then 1.end")
+        #expect(formatting.notice == .unsafe)
+        #expect(formatting.notice?.message.isEmpty == false)
+    }
+
+    @Test func composingSaysSoBeforeAndAfterFormatting() async throws {
+        let harness = EditorHarness("select a, b from t")
+        let formatting = formatting(harness)
+        harness.textView.setSelectedRange(NSRange(location: 18, length: 0))
+        harness.textView.setMarkedText("ni", selectedRange: NSRange(location: 2, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(formatting.start(options: SQLFormatOptions(), detached: detached("")) == nil, "nothing starts while composing")
+        #expect(formatting.notice == .composing)
+        harness.textView.unmarkText()
+        let task = try #require(formatting.start(options: SQLFormatOptions(), detached: detached("")))
+        #expect(formatting.notice == nil, "a new format clears the notice")
+        // An input method starts composing while the format runs: the result waits for nobody, it is dropped.
+        harness.textView.setMarkedText("x", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        await task.value
+        #expect(harness.textView.hasMarkedText())
+        #expect(formatting.notice == .composing)
+    }
+
+    @Test func aTextChangedWhileFormattingSaysSo() async throws {
+        // Reported edit (the model calls textDidChange): the running format is cancelled.
+        let reported = EditorHarness("select a, b from t")
+        let first = formatting(reported)
+        let task = try #require(first.start(options: SQLFormatOptions(), detached: detached("")))
+        reported.type("x", at: 0)
+        first.textDidChange()
+        await task.value
+        #expect(reported.textView.string == "xselect a, b from t")
+        #expect(first.notice == .textChanged)
+        #expect(!first.isRunning)
+        // An edit not reported yet: the editor refuses the stale result.
+        let unreported = EditorHarness("select a, b from t")
+        let second = formatting(unreported)
+        let pending = try #require(second.start(options: SQLFormatOptions(), detached: detached("")))
+        unreported.textView.textStorage?.replaceCharacters(in: NSRange(location: 0, length: 0), with: "y")
+        await pending.value
+        #expect(unreported.textView.string == "yselect a, b from t")
+        #expect(second.notice == .textChanged)
+        // Closing the tab cancels without a notice.
+        let closing = formatting(EditorHarness("select a, b from t"))
+        let cancelled = try #require(closing.start(options: SQLFormatOptions(), detached: detached("")))
+        closing.cancel()
+        await cancelled.value
+        #expect(closing.notice == nil)
+    }
+
+    @Test func withoutAnEditorTheTextIsStoredIfUnchanged() async throws {
+        var stored: (source: String, result: String)?
+        let formatting = formatting(nil)
+        await formatting.start(options: SQLFormatOptions(), detached: detached("select a from t") { source, result, _ in
+            stored = (source, result)
+            return true
+        })?.value
+        #expect(stored?.source == "select a from t")
+        #expect(stored?.result == "SELECT a\nFROM t")
+        #expect(formatting.notice == nil)
+        await formatting.start(options: SQLFormatOptions(), detached: detached("select a from t") { _, _, _ in false })?.value
+        #expect(formatting.notice == .textChanged)
+    }
+
+    @Test func aNoticeGoesAwayOnItsOwn() async throws {
+        let harness = EditorHarness("select 1.end")
+        let formatting = formatting(harness)
+        formatting.noticeDuration = .milliseconds(50)
+        await formatting.start(options: SQLFormatOptions(), detached: detached(""))?.value
+        #expect(formatting.notice == .unsafe)
+        for _ in 0..<100 where formatting.notice != nil { try await Task.sleep(for: .milliseconds(20)) }
+        #expect(formatting.notice == nil)
+    }
+
+    // Review #5b: before the session's sql_mode is known, text that some mode reads differently is refused with its own
+    // notice; other text formats.
+    @Test func anUnknownSessionModeSaysSo() async throws {
+        let harness = EditorHarness("select 'C:\\' as d, 1")
+        let formatting = formatting(harness)
+        await formatting.start(options: SQLFormatOptions(sessionModeKnown: false), detached: detached(""))?.value
+        #expect(harness.textView.string == "select 'C:\\' as d, 1")
+        #expect(formatting.notice == .modeUnknown)
+        let plain = EditorHarness("select a, b from t")
+        let other = self.formatting(plain)
+        await other.start(options: SQLFormatOptions(sessionModeKnown: false), detached: detached(""))?.value
+        #expect(plain.textView.string == "SELECT\n  a,\n  b\nFROM t")
+        #expect(other.notice == nil)
+    }
+
+    // Review #4/#5: Run, Run All and EXPLAIN split the script as the session does. Under NO_BACKSLASH_ESCAPES `'C:\'` ends
+    // at its second quote; under ANSI_QUOTES `"a\"` is a name.
+    @Test func runPathsSplitAsTheSessionDoes() {
+        let script = "SELECT 'C:\\' AS d;\nSELECT 2;\nSELECT \"a\\\";\nSELECT 3"
+        let noEscapes = SQLLexingMode(backslashEscapes: false)
+        let ansi = SQLLexingMode(ansiQuotes: true)
+        let none = NSRange(location: 0, length: 0)
+        #expect(SQLTabModel.statementsToRun(in: script, selection: none, all: true, mode: noEscapes).map(\.sql)
+            == ["SELECT 'C:\\' AS d", "SELECT 2", "SELECT \"a\\\"", "SELECT 3"])
+        #expect(SQLTabModel.statementsToRun(in: script, selection: none, all: true, mode: .standard).count == 1)
+        #expect(SQLTabModel.statementsToRun(in: "SELECT \"a\\\"; SELECT 3", selection: none, all: true, mode: ansi).map(\.sql)
+            == ["SELECT \"a\\\"", "SELECT 3"])
+        let second = (script as NSString).range(of: "SELECT 2")
+        let atCursor = SQLTabModel.statementsToRun(in: script, selection: NSRange(location: second.location + 2, length: 0), all: false, mode: noEscapes)
+        #expect(atCursor == [SQLTabModel.PlannedStatement(sql: "SELECT 2", editorOffset: second.location)])
+        let selected = SQLTabModel.statementsToRun(in: script, selection: NSRange(location: 0, length: second.upperBound), all: false, mode: noEscapes)
+        #expect(selected.map(\.sql) == ["SELECT 'C:\\' AS d", "SELECT 2"])
+        let explained = SQLTabModel.statementToExplain(in: script, selection: NSRange(location: second.location, length: 0), mode: noEscapes)
+        #expect(explained?.sql == "SELECT 2" && explained?.editorOffset == second.location)
+        // An out-of-range selection is not a selection (and never traps): the statement at the cursor is used.
+        #expect(SQLTabModel.statementsToRun(in: script, selection: NSRange(location: NSNotFound, length: 3), all: false, mode: noEscapes).count == 1)
+    }
+
     // Review #2: a re-render while an input method composes must not overwrite the marked text.
     @Test func compositionSurvivesARenderWithLaggingText() {
         let harness = EditorHarness("SELECT 1")

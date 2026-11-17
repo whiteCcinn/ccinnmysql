@@ -159,6 +159,16 @@ struct GuardDifferentialFuzzTests {
             word = ""
         }
         func at(_ offset: Int) -> Unicode.Scalar? { index + offset < chars.count ? chars[index + offset] : nil }
+        func isName(_ c: Unicode.Scalar) -> Bool { c.properties.isAlphabetic || c == "_" || c == "$" || ("0"..."9").contains(c) || c.value >= 0x80 }
+        /// A digit, or `.digit` not after a name; never right after `name.` (the server reads a name there).
+        func startsNumber(_ index: Int) -> Bool {
+            let c = chars[index]
+            let afterName = index > 0 && isName(chars[index - 1])
+            let afterMemberDot = index >= 2 && chars[index - 1] == "." && isName(chars[index - 2])
+            if afterMemberDot { return false }
+            if ("0"..."9").contains(c) { return true }
+            return c == "." && !afterName && (at(1).map { ("0"..."9").contains($0) } ?? false)
+        }
         while index < chars.count {
             let c = chars[index]
             if c == "'" || c == "\"" || c == "`" {
@@ -186,7 +196,17 @@ struct GuardDifferentialFuzzTests {
                 index += 2
                 while index < chars.count, !(chars[index] == "*" && at(1) == "/") { index += 1 }
                 index += 2
-            } else if c.properties.isAlphabetic || c == "_" || c == "$" || ("0"..."9").contains(c) {
+            } else if c == "\\", at(1) == "N" {
+                // MariaDB (and MySQL 5.x) read `\N` as NULL and end it after the N: `\Ninto` is NULL INTO.
+                flush()
+                tokens.append("NULL")
+                index += 2
+            } else if word.isEmpty, startsNumber(index), let length = Self.serverNumber(chars, from: index) {
+                // A number ends before a glued word (`1.5into` is 1.5 INTO); a malformed one stops the server's lexer.
+                if length < 0 { return ["<rejected>"] }
+                tokens.append("<number>")
+                index += length
+            } else if isName(c) {
                 word.unicodeScalars.append(c)
                 index += 1
             } else {
@@ -197,6 +217,40 @@ struct GuardDifferentialFuzzTests {
         }
         flush()
         return tokens
+    }
+
+    /// Length of the number the server reads at `start` (sql_lex.cc, written independently of `SQLLexer`): `0x…` / `0b…`
+    /// not followed by a name character; digits with a complete exponent; a decimal with an optional complete exponent.
+    /// `nil` where the server reads a name (`1abc`, `1e`), `-1` where it rejects the text (`1.e`).
+    static func serverNumber(_ chars: [Unicode.Scalar], from start: Int) -> Int? {
+        func digit(_ i: Int) -> Bool { i < chars.count && ("0"..."9").contains(chars[i]) }
+        func nameCharacter(_ i: Int) -> Bool {
+            i < chars.count && (chars[i].properties.isAlphabetic || chars[i] == "_" || chars[i] == "$" || digit(i) || chars[i].value >= 0x80)
+        }
+        func afterExponent(_ e: Int) -> Int? {
+            guard e < chars.count, chars[e] == "e" || chars[e] == "E" else { return nil }
+            var k = e + 1
+            if k < chars.count, chars[k] == "+" || chars[k] == "-" { k += 1 }
+            guard digit(k) else { return nil }
+            while digit(k) { k += 1 }
+            return k
+        }
+        if chars[start] == "0", start + 1 < chars.count, chars[start + 1] == "x" || chars[start + 1] == "b" {
+            let hex = chars[start + 1] == "x"
+            var end = start + 2
+            while end < chars.count, hex ? chars[end].properties.isASCIIHexDigit : (chars[end] == "0" || chars[end] == "1") { end += 1 }
+            return end > start + 2 && !nameCharacter(end) ? end - start : nil
+        }
+        var end = start
+        while digit(end) { end += 1 }
+        if end < chars.count, chars[end] == "." {
+            end += 1
+            while digit(end) { end += 1 }
+            guard end < chars.count, chars[end] == "e" || chars[end] == "E" else { return end - start }
+            return afterExponent(end).map { $0 - start } ?? -1
+        }
+        if let exponentEnd = afterExponent(end) { return exponentEnd - start }
+        return nameCharacter(end) ? nil : end - start
     }
 
     static func leaks(_ sql: String) -> [String] {
@@ -214,6 +268,10 @@ struct GuardDifferentialFuzzTests {
         #expect(Self.leaks("SELECT /*!50000 SLEEP(1) */") == ["SLEEP("])
         #expect(Self.leaks("SELECT 'a\\' INTO' FROM t") == [])
         #expect(Self.leaks("SELECT 1LOAD_FILE('x')") == [])
+        #expect(Self.leaks("SELECT 1.5into @v") == ["INTO"])
+        #expect(Self.leaks("SELECT 1e5into @v, 1einto, t.1e5into") == ["INTO"])
+        #expect(Self.leaks("SELECT 1.einto @v") == [], "rejected by the server's lexer")
+        #expect(Self.leaks("SELECT \\Ninto @v") == ["INTO"])
     }
 
     @Test(arguments: [UInt64(1), 2, 3, 4])
@@ -221,7 +279,8 @@ struct GuardDifferentialFuzzTests {
         let pieces = [" ", "\n", "\r", "\r\n", "\u{0B}", "\u{0C}", "\t", "#", "-- ", "--", "--\u{7F}", "--\r", "/*", "*/", "/*!",
                       "/*M!", "/*+ ", "'", "\"", "`", "\\", "\\'", "INTO OUTFILE '/tmp/x'", "LOAD_FILE('/etc/passwd')", "GET_LOCK('x', 0)",
                       " FROM t", ", 2", " SLEEP (1)", "DELETE FROM t", "x", "''", "\"\"", "``", "(", ")", " FOR UPDATE", " CHARACTER SET utf8mb4",
-                      "\u{0}", " ; SELECT 2", "/**/(", "1"]
+                      "\u{0}", " ; SELECT 2", "/**/(", "1", "1.5", "1e5", ".5", "e", "into @v", " for share", " lock in share mode", "x'41'",
+                      "ınto", "\\N", "\\Ninto @v", " IS NOT \\Nlock in share mode"]
         var generator = SplitMix64(state: seed)
         var accepted = 0
         for _ in 0..<15_000 {

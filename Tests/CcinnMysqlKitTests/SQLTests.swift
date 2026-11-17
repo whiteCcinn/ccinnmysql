@@ -27,13 +27,107 @@ struct SQLLexerTests {
 
     @Test func handlesStringsAndUnicode() {
         let tokens = SQLLexer.tokenize("SELECT 'it''s', \"a\\\"b\", '雪', _utf8mb4'x', X'4D'")
-        #expect(tokens.filter { $0.kind == .string }.count == 5)
+        #expect(tokens.filter { $0.kind == .string }.count == 4)
+        #expect(tokens.last?.kind == .number, "X'4D' is one hexadecimal literal")
     }
 
     @Test func unterminatedConstructsExtendToEnd() {
         #expect(kinds("SELECT 'abc") == [.keyword, .string])
         #expect(kinds("SELECT /* abc") == [.keyword, .comment])
         #expect(kinds("SELECT `abc") == [.keyword, .quotedIdentifier])
+    }
+
+    // The server reads `0x1g` and `0x1and` as identifiers (a hex literal must not run into name characters), like `1abc`.
+    @Test func numbersRunningIntoNameCharactersAreOneToken() {
+        for text in ["0x1and", "0xZZ", "0x", "1abc", "0b12x"] {
+            #expect(SQLLexer.tokenize(text).map(\.range) == [0..<text.utf16.count], "\(text)")
+        }
+        #expect(kinds("0x1F+1") == [.number, .operator, .number])
+    }
+
+    /// Kind and text of each token.
+    private func lexed(_ text: String) -> [String] {
+        let lexer = SQLLexer(text)
+        return lexer.tokens().map { "\($0.kind) \(lexer.text(of: $0))" }
+    }
+
+    // Review: numbers end exactly where MySQL and MariaDB end them (sql_lex.cc; every case below was run on MySQL 8.4 and
+    // MariaDB 10.11, and the integration tests re-check them). A word glued to a number is an alias (`1.5x`), a keyword
+    // (`1e2end` ends a CASE) or part of a name (`1abc`); the formatter re-lexes its output with this lexer, so a
+    // disagreement here could never be caught there.
+    @Test func numbersEndWhereTheServerEndsThem() {
+        let expected: [String: [String]] = [
+            // A number, then a separate word.
+            "1.5x": ["number 1.5", "identifier x"], "1e2x": ["number 1e2", "identifier x"], "1e2e3": ["number 1e2", "identifier e3"],
+            "1.a": ["number 1.", "identifier a"], ".5x": ["number .5", "identifier x"], "1.5e+3x": ["number 1.5e+3", "identifier x"],
+            "1e+3x": ["number 1e+3", "identifier x"], "1.$": ["number 1.", "identifier $"], "1.5é": ["number 1.5", "identifier é"],
+            "1e2end": ["number 1e2", "keyword end"], "1.5and": ["number 1.5", "keyword and"], "1.5into": ["number 1.5", "keyword into"],
+            "x'41'z": ["number x'41'", "identifier z"], "X'41'end": ["number X'41'", "keyword end"], "b'1'z": ["number b'1'", "identifier z"],
+            "x'41''42'": ["number x'41'", "string '42'"], "x''": ["number x''"], "B''": ["number B''"],
+            "0x41.5": ["number 0x41", "number .5"], "1e2.5": ["number 1e2", "number .5"], "1.5.5": ["number 1.5", "number .5"],
+            "0b1": ["number 0b1"], "0x4F": ["number 0x4F"], "1.e5": ["number 1.e5"], "1.": ["number 1."],
+            // Names: digits followed by name characters, unless they make a number.
+            "1abc": ["identifier 1abc"], "0b12": ["identifier 0b12"], "0X41": ["identifier 0X41"], "0B1": ["identifier 0B1"],
+            "0x1g": ["identifier 0x1g"], "0x": ["identifier 0x"], "0b": ["identifier 0b"], "1e": ["identifier 1e"], "1ex": ["identifier 1ex"],
+            "1$": ["identifier 1$"], "1é": ["identifier 1é"], "0xé": ["identifier 0xé"], "1eé": ["identifier 1eé"], "1__": ["identifier 1__"],
+            "1e+x": ["identifier 1e", "operator +", "identifier x"], "1e+": ["identifier 1e", "operator +"],
+            "1e+é": ["identifier 1e", "operator +", "identifier é"],
+            // After `name.` the server reads a name, whatever it starts with; after a back-quoted name `.5` is a number.
+            "t.5e+2": ["identifier t", "punctuation .", "identifier 5e", "operator +", "number 2"],
+            "t.1e2": ["identifier t", "punctuation .", "identifier 1e2"],
+            "t.1.5x": ["identifier t", "punctuation .", "identifier 1", "punctuation .", "identifier 5x"],
+            "date.5": ["keyword date", "punctuation .", "identifier 5"], "1abc.5": ["identifier 1abc", "punctuation .", "identifier 5"],
+            "`t`.5": ["quotedIdentifier `t`", "number .5"], "t .5": ["identifier t", "number .5"],
+            "t. 5": ["identifier t", "punctuation .", "number 5"], "t.x'41'": ["identifier t", "punctuation .", "identifier x", "string '41'"],
+        ]
+        for (text, tokens) in expected {
+            #expect(lexed(text) == tokens, "\(text)")
+        }
+    }
+
+    // Review: the server rejects these while lexing (1064): an exponent without digits after a decimal, a hexadecimal
+    // literal with an odd number of digits or a non-digit, a bit literal with another digit. They are kept whole (an END
+    // inside `1.end` is never a keyword) and flagged, so the formatter refuses rather than guess.
+    @Test func malformedLiteralsAreFlagged() {
+        for text in ["1.e", "1.end", ".5e", "1.5ex", "1.5e", "1.5e+", "1.5e+x", "1.eé", "1.5Ex", "1.5e-"] {
+            let lexer = SQLLexer(text)
+            let tokens = lexer.tokens()
+            #expect(tokens.map(\.range) == [0..<text.utf16.count], "\(text)")
+            #expect(lexer.containsMalformedLiteral(tokens), "\(text)")
+        }
+        for text in ["x'4'", "x'4g'", "b'12'", "X'41", "b'1"] {
+            let lexer = SQLLexer(text)
+            #expect(lexer.containsMalformedLiteral(lexer.tokens()), "\(text)")
+        }
+        for text in ["1.5x", "1e2end", "x'41'z", "1e+x", "1abc", "N'a'", "_utf8mb4'a'", "x 'a'", "t.x'41'", "select 'x'", "ax'41'"] {
+            let lexer = SQLLexer(text)
+            #expect(!lexer.containsMalformedLiteral(lexer.tokens()), "\(text)")
+        }
+    }
+
+    // Security review: MariaDB (and MySQL 5.x) read `\\N` as NULL and end it after the N, so `\\Nlock` is NULL LOCK; MySQL 8
+    // rejects any `\\` outside strings. The lexer ends `\\N` where MariaDB does, and flags every backslash outside strings,
+    // back-quoted names and comments: the read-only guard and the formatter refuse such text.
+    @Test func backslashNEndsAfterTheN() {
+        #expect(lexed("SELECT \\Nlock") == ["keyword SELECT", "keyword \\N", "keyword lock"])
+        #expect(lexed("\\Nx") == ["keyword \\N", "identifier x"])
+        #expect(lexed("\\Ninto @v") == ["keyword \\N", "keyword into", "variable @v"])
+        #expect(lexed("\\nx") == ["operator \\", "identifier nx"], "only a capital N")
+        for text in ["SELECT \\N", "SELECT \\x", "a \\ b", "SELECT 1 IS NOT \\Nlock in share mode", "@`a`\\N"] {
+            let lexer = SQLLexer(text)
+            #expect(lexer.containsBareBackslash(lexer.tokens()), "\(text)")
+        }
+        for text in ["SELECT 'a\\b'", "SELECT `a\\b`", "SELECT 1 -- \\N", "SELECT 1 /* \\N */", "SELECT @`a\\b`", "SELECT \"a\\\"b\""] {
+            let lexer = SQLLexer(text)
+            #expect(!lexer.containsBareBackslash(lexer.tokens()), "\(text)")
+        }
+    }
+
+    // Review: only ASCII words are keywords, as for the server. Unicode case mapping would make the ligature `ﬁrst` FIRST,
+    // the long s in `ſelect` SELECT and the dotless i in `lımıt` LIMIT, all names on the server.
+    @Test func onlyASCIIWordsAreKeywords() {
+        #expect(kinds("ﬁrst ſelect lımıt ＳＥＬＥＣＴ") == [.identifier, .identifier, .identifier, .identifier])
+        #expect(kinds("first Select LIMIT") == [.keyword, .keyword, .keyword])
     }
 
     @Test func rangesAreUTF16() {
@@ -135,6 +229,8 @@ struct StatementTests {
         ("BEGIN", .transaction), ("START TRANSACTION", .transaction), ("COMMIT", .transaction), ("START REPLICA", .administration),
         ("WITH x AS (SELECT 1) DELETE FROM t", .dataModification), ("WITH x AS (SELECT 1) UPDATE t SET a = 1", .dataModification),
         ("SELECT * INTO OUTFILE '/tmp/x' FROM t", .dataModification), ("EXPLAIN ANALYZE UPDATE t SET a = 1", .dataModification),
+        // INTO glued to a number is still INTO (the server ends the number first): writes ask for confirmation.
+        ("SELECT 1.5into outfile '/tmp/x'", .dataModification), ("SELECT 1e5into @v", .dataModification),
         ("ANALYZE TABLE t", .administration), ("ANALYZE UPDATE t SET a = 1", .dataModification), ("ANALYZE FORMAT=JSON SELECT 1", .explain),
         ("CALL p()", .dataModification), ("DO SLEEP(1)", .dataModification), ("LOAD DATA INFILE 'x' INTO TABLE t", .dataModification),
         ("REPLACE INTO t VALUES (1)", .dataModification), ("CREATE TABLE t (a INT)", .definition), ("RENAME TABLE a TO b", .definition),
@@ -179,6 +275,44 @@ struct ReadOnlyGuardTests {
     ])
     func rejectsEverythingElse(sql: String) {
         #expect(ReadOnlySQLGuard.check(sql) != nil, "\(sql)")
+    }
+
+    // Final review (security): the shared lexer is a security boundary. Each of these hides INTO, a locking read or a
+    // second statement behind a construct that some server, session or tool reads differently; every one is rejected.
+    // 1.2.0 let the `INTO @v` and locking forms with a glued number through (its lexer took `into` into the number).
+    @Test(arguments: [
+        // Numbers end before a glued word (`1.5into` is `1.5 INTO`).
+        "SELECT 1.5into outfile '/tmp/x'", "SELECT 1e5into dumpfile '/tmp/x'", "SELECT 0x41into outfile '/tmp/x'",
+        "SELECT x'41'into outfile '/tmp/x'", "SELECT 1.5into @v", "SELECT 1e5into @v", "SELECT .5into @v FROM t", "SELECT 1e+5into @v",
+        "SELECT 1.5e3into @v", "SELECT x'41'into @v", "SELECT b'1'into @v", "SELECT * FROM t WHERE a = 1.0for update",
+        "SELECT * FROM t WHERE a = 1.0for share", "SELECT * FROM t WHERE a = 1e0lock in share mode", "SELECT 1 FROM t WHERE 1.0or sleep(1)",
+        // Literals the server rejects while lexing.
+        "SELECT 1.einto @v", "SELECT 1.e", "SELECT x'4'",
+        // `ınto` upper-cases to INTO in Unicode: a name to MySQL and MariaDB (both reject `SELECT 1 ınto @v` with 1064),
+        // refused anyway.
+        "SELECT 1 ınto @v", "SELECT 1.5 ınto outfile '/tmp/x'",
+        // A backslash ends a string early under NO_BACKSLASH_ESCAPES (and in an ANSI_QUOTES name).
+        "SELECT 'a\\' INTO OUTFILE '/tmp/x' -- '", "SELECT \"a\\\" INTO OUTFILE '/tmp/x' -- \"", "SELECT '\\'; DROP TABLE t; -- '",
+        // Comments: `--` needs whitespace, other tools end line comments at \r or U+2028, executable comments run code.
+        "SELECT 1 --x; DROP TABLE t", "SELECT 1 --\tx\n; DROP TABLE t", "SELECT 1 #\r; DROP TABLE t", "SELECT 1 -- x\u{2028}; DROP TABLE t",
+        "SELECT 1 /*! ; DROP TABLE t */", "SELECT 1 /*!99999 INTO OUTFILE '/tmp/x' */", "SELECT 1 /*M!100000 INTO DUMPFILE '/tmp/x' */",
+        // MariaDB reads `\\N` as NULL and ends it after the N (`\\Nlock` is NULL LOCK); 1.2.0 read `\\` and the name `Nlock`.
+        "(SELECT * FROM t WHERE a IS NOT \\Nlock in share mode)", "SELECT \\Ninto @v",
+        "ANALYZE FORMAT=JSON SELECT * FROM t WHERE a IS NOT \\Nlock in share mode",
+        "EXPLAIN FORMAT=JSON SELECT * FROM t WHERE a IS NOT \\Nlock in share mode", "SELECT \\N", "SELECT \\Nfrom t", "SELECT \\x",
+        // DELIMITER is a client command: the server would see the `;`.
+        "DELIMITER ;;\nSELECT 1; SET GLOBAL read_only = 0;;", "DELIMITER //\nSELECT 1 INTO OUTFILE '/tmp/x'//",
+    ])
+    func rejectsSmugglingThroughLexerDifferences(sql: String) {
+        #expect(ReadOnlySQLGuard.check(sql) != nil, "\(sql.debugDescription)")
+    }
+
+    // The stricter checks keep ordinary reads: doubled quotes, escaped backslashes, numbers with aliases, hex literals,
+    // non-ASCII names.
+    @Test(arguments: ["SELECT 'it''s'", "SELECT 'a\\\\b'", "SELECT 1.5 AS x, 1e5 y, x'41' z", "SELECT 1.5x", "SELECT ſelect FROM t",
+                      "SELECT 1 ﬁrst", "DELIMITER //\nSELECT 1//"])
+    func stillAllowsReadsWrittenUnambiguously(sql: String) {
+        #expect(ReadOnlySQLGuard.check(sql) == nil, "\(sql.debugDescription)")
     }
 }
 

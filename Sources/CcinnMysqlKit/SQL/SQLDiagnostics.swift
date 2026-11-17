@@ -181,9 +181,9 @@ public enum SQLLinter {
     public static let maximumLength = 4_000_000
 
     /// `backslashEscapes` is false when the session's sql_mode has NO_BACKSLASH_ESCAPES, so `'C:\'` is a
-    /// complete string there, as the server sees it.
-    public static func diagnose(_ text: String, backslashEscapes: Bool = true) -> [SQLDiagnostic] {
-        let lexer = SQLLexer(text, backslashEscapes: backslashEscapes)
+    /// complete string there, as the server sees it; `ansiQuotes` makes `"…"` a quoted name (ANSI_QUOTES).
+    public static func diagnose(_ text: String, backslashEscapes: Bool = true, ansiQuotes: Bool = false) -> [SQLDiagnostic] {
+        let lexer = SQLLexer(text, backslashEscapes: backslashEscapes, ansiQuotes: ansiQuotes)
         let length = lexer.units.count
         guard length > 0, length <= maximumLength else { return [] }
         var diagnostics: [SQLDiagnostic] = []

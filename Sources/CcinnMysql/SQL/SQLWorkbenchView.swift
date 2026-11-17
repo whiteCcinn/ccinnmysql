@@ -14,7 +14,7 @@ struct SQLWorkbenchView: View {
                     SQLEditor(text: $model.text, selection: $model.selection, diagnostics: model.diagnostics,
                               completionProvider: { [model] text, cursor in await model.completions(text: text, cursor: cursor) },
                               onEdit: { [model] edits in model.editorDidEdit(edits) },
-                              focusOnAppear: true)
+                              focusOnAppear: true, controller: model.editorController, lexingMode: model.effectiveLexingMode)
                     DiagnosticsBar(model: model)
                 }
                 .frame(minHeight: 110, idealHeight: 260)
@@ -80,6 +80,14 @@ private struct WorkbenchToolbar: View {
             .fixedSize()
             .disabled(model.isRunning)
             .help("Show the query plan as a tree (⌘E); Explain Analyze executes a query and measures it (⇧⌘E)")
+
+            Button {
+                model.formatSQL()
+            } label: {
+                Label("Format", systemImage: "text.alignleft")
+            }
+            .disabled(model.isFormatting)
+            .help("Format the selection, or the whole script when nothing is selected (⌥⌘L)")
 
             if model.isRunning {
                 Button(role: .destructive) {
@@ -185,8 +193,8 @@ private struct DatabaseMenu: View {
 
 // MARK: - Diagnostics
 
-/// A status line under the editor, always present so the editor never resizes: the diagnostic at the
-/// cursor (position, message, navigation) and the cursor's own line and column.
+/// A status line under the editor, always present so the editor never resizes: why Format SQL changed nothing (for a
+/// few seconds) or the diagnostic at the cursor (position, message, navigation), and the cursor's own line and column.
 private struct DiagnosticsBar: View {
     let model: SQLTabModel
     /// The diagnostic last navigated to; disambiguates diagnostics that start at the same offset.
@@ -198,7 +206,13 @@ private struct DiagnosticsBar: View {
         VStack(spacing: 0) {
             Divider()
             HStack(spacing: 8) {
-                if let index = SQLDiagnosticNavigator.currentIndex(in: diagnostics, cursor: cursor, preferred: preferred) {
+                if let notice = model.formatting.notice {
+                    // Format SQL changed nothing: say why (shown for a few seconds, before the diagnostic at the cursor).
+                    Image(systemName: "text.badge.xmark").foregroundStyle(.orange)
+                    Text(notice.message)
+                        .truncationMode(.tail)
+                        .help(notice.message)
+                } else if let index = SQLDiagnosticNavigator.currentIndex(in: diagnostics, cursor: cursor, preferred: preferred) {
                     problem(diagnostics, index)
                 }
                 Spacer(minLength: 8)

@@ -239,6 +239,11 @@ final class WorkspaceModel {
 
     var selectedTab: WorkspaceTab? { tabs.first { $0.id == selectedTabID } }
 
+    var selectedSQL: SQLTabModel? {
+        if case let .sql(model)? = selectedTab?.kind { return model }
+        return nil
+    }
+
     func openObject(_ object: DatabaseObject, section: ObjectDetailModel.Section? = nil) {
         if let existing = tabs.first(where: { if case let .object(model) = $0.kind { model.object.id == object.id } else { false } }) {
             selectedTabID = existing.id

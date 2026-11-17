@@ -171,9 +171,13 @@ final class SQLTabModel {
     private var stopRequested = false
     private var lintTask: Task<Void, Never>?
     private var editorEditPending = false
-    /// The session lexes strings with backslash escapes (sql_mode without NO_BACKSLASH_ESCAPES); read after
-    /// every statement, so local checks agree with the server.
-    @ObservationIgnored private var lintsWithBackslashEscapes = true
+    /// How this tab's session lexes SQL (sql_mode NO_BACKSLASH_ESCAPES and ANSI_QUOTES): read from the server when the
+    /// tab opens and after statements that mention sql_mode, and the backslash mode after every statement. `nil` until
+    /// known; splitting, local checks and highlighting then use the servers' default, and the formatter refuses text
+    /// that depends on the mode.
+    private(set) var lexingMode: SQLLexingMode?
+    @ObservationIgnored private var lexingModeTask: Task<Void, Never>?
+    var effectiveLexingMode: SQLLexingMode { lexingMode ?? .standard }
     /// Line starts of `text`, maintained edit by edit (positions without scanning the text).
     @ObservationIgnored private var lineIndex: SQLLineIndex
     @ObservationIgnored private var lineIndexIsStale = false
@@ -182,7 +186,7 @@ final class SQLTabModel {
 
     /// A statement to execute: `sql` is sent as is; `editorOffset` is where its source starts in the
     /// editor (nil when unknown) and `prefixLength` the units the app prepended (`EXPLAIN FORMAT=JSON `).
-    private struct PlannedStatement {
+    struct PlannedStatement: Equatable {
         let sql: String
         let editorOffset: Int?
         var prefixLength = 0
@@ -195,6 +199,37 @@ final class SQLTabModel {
         set { UserDefaults.standard.set(newValue, forKey: "autoLimit") }
     }
 
+    // MARK: Formatting
+
+    /// The editor of this tab: its live text, and edits that must be undoable (formatting).
+    let editorController: SQLEditorController
+    /// Format SQL for this tab's editor, with its notice for the status bar when a result does not apply.
+    let formatting: SQLFormatting
+    var isFormatting: Bool { formatting.isRunning }
+
+    /// Settings ▸ General ▸ SQL formatting.
+    static var formatOptions: SQLFormatOptions {
+        let defaults = UserDefaults.standard
+        let keywordCase = defaults.string(forKey: "sqlFormatKeywordCase").flatMap(SQLFormatOptions.KeywordCase.init(rawValue:)) ?? .upper
+        let indent = defaults.object(forKey: "sqlFormatIndent") as? Int ?? 2
+        return SQLFormatOptions(keywordCase: keywordCase, indentWidth: indent)
+    }
+
+    /// Formats the selection, or the whole script when nothing is selected, as one undoable edit (see `SQLFormatting`).
+    /// Strings are lexed as the session lexes them (NO_BACKSLASH_ESCAPES), so their contents are never touched.
+    func formatSQL() {
+        var options = Self.formatOptions
+        options.lexingMode = effectiveLexingMode
+        options.sessionModeKnown = lexingMode != nil
+        formatting.start(options: options, detached: SQLFormatting.Detached(text: text, selection: selection) { [weak self] source, result, selection in
+            // No editor yet (a tab opened from launch arguments): replace the text directly, if it is still the same.
+            guard let self, (self.text as NSString).isEqual(to: source) else { return false }
+            self.text = result
+            self.selection = selection
+            return true
+        })
+    }
+
     init(title: String, text: String, database: String?, workspace: WorkspaceModel) {
         self.title = title
         self.text = text
@@ -203,7 +238,11 @@ final class SQLTabModel {
         self.workspace = workspace
         session = workspace.client.openSession(database: database)
         self.selection = NSRange(location: (text as NSString).length, length: 0)
+        let editor = SQLEditorController()
+        editorController = editor
+        formatting = SQLFormatting(editor: editor)
         scheduleLint(after: .zero)
+        lexingModeTask = Task { [weak self] in await self?.readLexingMode() }
     }
 
     var selectedOutcome: StatementOutcome? {
@@ -231,6 +270,7 @@ final class SQLTabModel {
     /// index on their text.
     func editorDidEdit(_ edits: [SQLTextEdit]) {
         editorEditPending = true
+        formatting.textDidChange()
         guard !edits.isEmpty else { return }
         for edit in edits where !lineIndexIsStale {
             if !lineIndex.apply(edit) { lineIndexIsStale = true }
@@ -261,6 +301,7 @@ final class SQLTabModel {
     }
 
     private func textWasReplaced() {
+        formatting.textDidChange()
         rebuildLineIndex()
         if !serverDiagnostics.isEmpty { serverDiagnostics = [] }
         if !localDiagnostics.isEmpty { localDiagnostics = [] }
@@ -271,50 +312,100 @@ final class SQLTabModel {
     private func scheduleLint(after delay: Duration = .milliseconds(300)) {
         lintTask?.cancel()
         let snapshot = text
-        let backslashEscapes = lintsWithBackslashEscapes
+        let mode = effectiveLexingMode
         lintTask = Task { [weak self] in
             if delay > .zero { try? await Task.sleep(for: delay) }
             guard !Task.isCancelled else { return }
-            let found = await Task.detached(priority: .utility) { SQLLinter.diagnose(snapshot, backslashEscapes: backslashEscapes) }.value
+            let found = await Task.detached(priority: .utility) {
+                SQLLinter.diagnose(snapshot, backslashEscapes: mode.backslashEscapes, ansiQuotes: mode.ansiQuotes)
+            }.value
             // Any edit since the snapshot cancelled this task (both run on the main actor).
             guard let self, !Task.isCancelled else { return }
             if found != self.localDiagnostics { self.localDiagnostics = found }
         }
     }
 
-    /// Follows the session's NO_BACKSLASH_ESCAPES (it can change with `SET sql_mode`).
-    private func refreshLintMode() async {
+    /// Reads the session's sql_mode (connecting the session if needed); leaves the mode unknown when that fails.
+    private func readLexingMode() async {
+        guard let sqlMode = try? await session.run("SELECT @@SESSION.sql_mode AS m").last?.scalar else { return }
+        setLexingMode(SQLLexingMode(sqlMode: sqlMode))
+    }
+
+    /// After a statement: a statement that mentions sql_mode (`SET sql_mode = …`, `SET @@SESSION.sql_mode = …`) may have
+    /// changed both modes, so they are read again; otherwise NO_BACKSLASH_ESCAPES comes with every reply's status.
+    private func refreshLexingMode(after sql: String) async {
+        if lexingMode == nil || sql.range(of: "sql_mode", options: .caseInsensitive) != nil {
+            await readLexingMode()
+            return
+        }
         let backslashEscapes = !(await session.noBackslashEscapes)
-        guard backslashEscapes != lintsWithBackslashEscapes else { return }
-        lintsWithBackslashEscapes = backslashEscapes
+        setLexingMode(SQLLexingMode(backslashEscapes: backslashEscapes, ansiQuotes: effectiveLexingMode.ansiQuotes))
+    }
+
+    private func setLexingMode(_ mode: SQLLexingMode) {
+        guard mode != lexingMode else { return }
+        lexingMode = mode
         scheduleLint(after: .zero)
+    }
+
+    /// Runs `action` with the session's lexing mode; while it is still being read, once that is done (the default if it
+    /// failed), so the first Run splits as the session does.
+    private func withLexingMode(_ action: @escaping @MainActor (SQLTabModel, SQLLexingMode) -> Void) {
+        if let lexingMode { return action(self, lexingMode) }
+        let pending = lexingModeTask
+        Task { [weak self] in
+            await pending?.value
+            guard let self else { return }
+            action(self, self.effectiveLexingMode)
+        }
+    }
+
+    /// The statements Run sends (the selection's, else the one at the cursor) or Run All sends, split as the session
+    /// splits them (NO_BACKSLASH_ESCAPES and ANSI_QUOTES change where a string ends, and so where `;` is).
+    static func statementsToRun(in text: String, selection: NSRange, all: Bool, mode: SQLLexingMode) -> [PlannedStatement] {
+        if all {
+            return SQLStatementSplitter.split(text, mode: mode).map { PlannedStatement(sql: $0.text, editorOffset: $0.range.lowerBound) }
+        }
+        if let selected = selectedText(in: text, selection: selection) {
+            return SQLStatementSplitter.split(selected, mode: mode).map {
+                PlannedStatement(sql: $0.text, editorOffset: selection.location + $0.range.lowerBound)
+            }
+        }
+        guard let statement = SQLStatementSplitter.statement(at: selection.location, in: text, mode: mode) else { return [] }
+        return [PlannedStatement(sql: statement.text, editorOffset: statement.range.lowerBound)]
+    }
+
+    /// The statement EXPLAIN works on (the selection's first, else the one at the cursor) and its editor offset.
+    static func statementToExplain(in text: String, selection: NSRange, mode: SQLLexingMode) -> (sql: String, editorOffset: Int)? {
+        let selected = selectedText(in: text, selection: selection)
+        guard let statement = selected.map({ SQLStatementSplitter.split($0, mode: mode).first })
+            ?? SQLStatementSplitter.statement(at: selection.location, in: text, mode: mode) else { return nil }
+        return (statement.text, (selected == nil ? 0 : selection.location) + statement.range.lowerBound)
     }
 
     // MARK: Running
 
     /// Selection if any, otherwise the statement under the cursor.
     func runCurrent() {
-        if let selected = selectedText {
-            run(SQLStatementSplitter.split(selected).map { PlannedStatement(sql: $0.text, editorOffset: selection.location + $0.range.lowerBound) })
-            return
+        withLexingMode { model, mode in
+            model.run(Self.statementsToRun(in: model.text, selection: model.selection, all: false, mode: mode))
         }
-        guard let statement = SQLStatementSplitter.statement(at: selection.location, in: text) else { return }
-        run([PlannedStatement(sql: statement.text, editorOffset: statement.range.lowerBound)])
     }
 
     func runAll() {
-        run(SQLStatementSplitter.split(text).map { PlannedStatement(sql: $0.text, editorOffset: $0.range.lowerBound) })
+        withLexingMode { model, mode in
+            model.run(Self.statementsToRun(in: model.text, selection: model.selection, all: true, mode: mode))
+        }
     }
 
     /// EXPLAIN of the current statement: FORMAT=JSON (visual plan), or `analyze` to execute it and measure
     /// (EXPLAIN ANALYZE on MySQL 8.0.18+, ANALYZE FORMAT=JSON on MariaDB) — only for queries, never for writes.
     func explain(analyze: Bool) {
-        let selected = selectedText
-        guard let statement = selected.map({ SQLStatementSplitter.split($0).first })
-            ?? SQLStatementSplitter.statement(at: selection.location, in: text) else { return }
-        let base = selected == nil ? 0 : selection.location
-        let body = statement.text
-        let editorOffset = base + statement.range.lowerBound
+        withLexingMode { model, mode in model.explain(analyze: analyze, mode: mode) }
+    }
+
+    private func explain(analyze: Bool, mode: SQLLexingMode) {
+        guard let (body, editorOffset) = Self.statementToExplain(in: text, selection: selection, mode: mode) else { return }
         let kind = SQLStatementKind.of(body)
         guard kind != .explain else {
             return run([PlannedStatement(sql: body, editorOffset: editorOffset)])
@@ -341,9 +432,11 @@ final class SQLTabModel {
     }
 
     /// The selected text, when the selection is non-empty and inside the text.
-    private var selectedText: String? {
+    static func selectedText(in text: String, selection: NSRange) -> String? {
         let nsText = text as NSString
-        guard selection.length > 0, selection.location >= 0, NSMaxRange(selection) <= nsText.length else { return nil }
+        // Not NSMaxRange: `location + length` overflows (and traps) for NSNotFound.
+        guard selection.length > 0, selection.location >= 0, selection.location <= nsText.length,
+              selection.length <= nsText.length - selection.location else { return nil }
         return nsText.substring(with: selection)
     }
 
@@ -354,6 +447,7 @@ final class SQLTabModel {
             do {
                 try await session.resetSession()
                 isInTransaction = false
+                await readLexingMode() // back to the global sql_mode
                 workspace.showToast("Session reset")
             } catch {
                 workspace.showToast(describe(error), isError: true)
@@ -458,7 +552,7 @@ final class SQLTabModel {
         }
         outcome.isRunning = false
         await workspace.history.append(historyEntry)
-        await refreshLintMode()
+        await refreshLexingMode(after: sql)
         return outcome.errorMessage == nil
     }
 
@@ -630,6 +724,7 @@ final class SQLTabModel {
     func close() {
         runTask?.cancel()
         lintTask?.cancel()
+        formatting.cancel()
         if let pendingConfirmation { pendingConfirmation.continuation.resume(returning: false) }
         pendingConfirmation = nil
         let session = session
