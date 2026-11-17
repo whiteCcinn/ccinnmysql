@@ -35,6 +35,20 @@ final class WindowSession {
         }
     }
     private var connectTask: Task<Void, Never>?
+    /// Numbers connect attempts. Progress and results of an attempt that is no longer the current one (another connect
+    /// started, Cancel, Disconnect) are ignored: cancellation alone cannot stop a progress hop already on its way.
+    private var connectGeneration: UInt64 = 0
+
+    /// Opens a client: (profile, password, SSH secret, client-certificate passphrase, progress). Injected by tests.
+    typealias Opener = @Sendable (ConnectionProfile, String, String?, String?, @escaping @Sendable (String) -> Void) async throws -> MySQLClient
+    private let opener: Opener
+
+    init(opener: @escaping Opener = { profile, password, sshSecret, passphrase, progress in
+        try await ConnectionOpener.open(profile: profile, password: password, sshSecret: sshSecret,
+                                        clientCertificatePassphrase: passphrase, progress: progress)
+    }) {
+        self.opener = opener
+    }
 
     var workspace: WorkspaceModel? {
         if case let .connected(model) = phase { return model }
@@ -43,6 +57,10 @@ final class WindowSession {
 
     func connect(profile: ConnectionProfile, store: ProfileStore, password overridePassword: String? = nil,
                  then: (@MainActor (WorkspaceModel) -> Void)? = nil) {
+        // A connect still in flight (double-click, a second Connect) would otherwise finish later and leave a live
+        // client behind, or overwrite this attempt's status.
+        abandonConnect()
+        let generation = connectGeneration
         connectError = nil
         let name = profile.displayName
         let password = overridePassword ?? store.password(for: profile) ?? ""
@@ -50,13 +68,13 @@ final class WindowSession {
         let passphrase = profile.clientCertificatePath != nil ? store.repository.clientCertificatePassphrase(for: profile) : nil
         phase = .connecting(name: name, status: "Connecting…")
         let report: @Sendable (String) -> Void = { status in
-            Task { @MainActor in self.updateStatus(name: name, status: status) }
+            Task { @MainActor in self.updateStatus(name: name, status: status, generation: generation) }
         }
+        let opener = opener
         connectTask = Task {
             do {
-                let client = try await ConnectionOpener.open(profile: profile, password: password, sshSecret: sshSecret,
-                                                             clientCertificatePassphrase: passphrase, progress: report)
-                if Task.isCancelled {
+                let client = try await opener(profile, password, sshSecret, passphrase, report)
+                guard !Task.isCancelled, generation == self.connectGeneration else {
                     await client.close()
                     return
                 }
@@ -67,16 +85,23 @@ final class WindowSession {
                 then?(workspace)
             } catch {
                 DebugLog.write("connect failed: \(error) cancelled=\(Task.isCancelled)")
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, generation == self.connectGeneration else { return }
                 self.connectError = describe(error)
                 self.phase = .connections
             }
         }
     }
 
-    private func updateStatus(name: String, status: String) {
-        guard case .connecting = phase else { return }
+    private func updateStatus(name: String, status: String, generation: UInt64) {
+        guard generation == connectGeneration, case .connecting = phase else { return }
         phase = .connecting(name: name, status: status)
+    }
+
+    /// Cancels the connect in flight and makes everything it still reports stale.
+    private func abandonConnect() {
+        connectTask?.cancel()
+        connectTask = nil
+        connectGeneration &+= 1
     }
 
     /// Connects a window opened by a request of this process. Without a handed-off connection (no request, or a
@@ -107,16 +132,14 @@ final class WindowSession {
     private static let handoff = WindowHandoff<WindowConnection>()
 
     func cancelConnecting() {
-        connectTask?.cancel()
-        connectTask = nil
+        abandonConnect()
         phase = .connections
     }
 
     func disconnect() {
         DebugLog.write("disconnect()")
         // A connect still in flight would otherwise finish later and leave a live client/tunnel behind.
-        connectTask?.cancel()
-        connectTask = nil
+        abandonConnect()
         workspace?.shutdown()
         phase = .connections
     }
