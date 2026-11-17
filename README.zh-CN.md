@@ -49,10 +49,12 @@ CcinnMysql 把这些答案放在一次点击之内。它是原生 SwiftUI/AppKit
 - **复制与拓扑**：从库通道（同时兼容 REPLICA 与 SLAVE 术语、MariaDB 多源复制）、binlog 位点、已连接的从库、Group Replication 成员、Galera 状态、InnoDB Cluster 元数据、ProxySQL 识别。
 - **变量、状态与账号**：全局/会话变量、带每秒速率的状态计数器、账号的认证插件、锁定与过期状态及其授权（只读，凭据已脱敏）。
 - **可视化 EXPLAIN**：将 `EXPLAIN FORMAT=JSON`（MySQL 两种格式与 MariaDB）、`EXPLAIN ANALYZE`（MySQL 8.0.18+）和 MariaDB `ANALYZE FORMAT=JSON` 展示为树，包含访问类型、索引、预估与实际行数、代价，并标出全表扫描、filesort、临时表和偏差过大的估算。
-- **SQL 工作台**：语法高亮、上下文补全（库、表、列、别名、函数）、支持 `DELIMITER`、仅对普通查询自动加 LIMIT、根据 `near '…' at line N` 标出错误位置、查询历史（凭据脱敏）、CSV/TSV/INSERT 导出和即时图表。
+- **SQL 工作台**：语法高亮、上下文补全（库、表、列、别名、函数）、支持 `DELIMITER`、仅对普通查询自动加 LIMIT、查询历史（凭据脱敏）、CSV/TSV/INSERT 导出和即时图表。
+- **精确的错误标记**：语句执行失败时，直接在出错的位置画下划线——MySQL 或 MariaDB 停下来的那个词（多行语句、同样的文字重复出现、服务器截断了 `near '…'` 时同样准确），或者错误信息中提到的列、表、数据库、函数或变量（会参考 `in 'where clause'` 这类子句）。错误信息显示在该行末尾，以及编辑器下方的状态栏中（带行号和列号）；结果区显示错误码，并提供 **Show in Editor**。标记会随编辑移动，修改出错语句后自动消失。输入时还会即时提示未闭合的引号、注释和括号，无需连接服务器。
+- **格式化 SQL**（⌥⌘L）：格式化选中内容或整个脚本——每个子句一行、列表每项一行，子查询、CASE 和 `CREATE TABLE` 的列自动缩进。只改动空白，以及所有受支持的服务器都保留的关键字的大小写（`shop.order` 中的 `order` 仍是名称）；名称、字符串、注释，以及 MySQL 在意的空格（`COUNT(*)` 与 `COUNT (*)` 不同，`X'41'`、`\N`、`'root'@'%'` 不能拆开）都原样保留，数字、字符串和双引号的读法与服务器及会话的 `sql_mode` 完全一致，`DELIMITER` 脚本的命令行也不会被改动；替换前会逐个 token 校验结果，可用 ⌘Z 撤销。如果没有做任何改动，编辑器下方的状态栏会说明原因。
 - **安全的行内编辑**：来自单张基表且包含主键（或非空唯一键）的结果可直接编辑；CcinnMysql 生成 `UPDATE … WHERE <主键> LIMIT 1` 并展示给你确认，只有恰好匹配一行时才提交。
-- **连接管理**：密码保存在钥匙串；TLS 模式（禁用、首选、必需、校验 CA、校验身份）支持自定义 CA 与客户端证书；通过系统 OpenSSH 建立 SSH 隧道；可按连接要求在执行写操作前确认。
-- **多窗口**：每个窗口使用独立的连接，可以把不同的服务器并排打开，也可以为同一台服务器开两个视图。File ▸ New Window（⌘N）打开连接页面；**New Window with This Connection**（⇧⌘N，或工具栏的 New Window 按钮）沿用当前连接和正在使用的密码再开一个窗口，未保存的连接和没有存入钥匙串的密码同样适用；已保存的连接可以右键选择 **Open in New Window**。关闭窗口只会断开该窗口自己的连接。
+- **连接管理**：密码保存在钥匙串；TLS 模式（禁用、首选、必需、校验 CA、校验身份）支持自定义 CA 与客户端证书；通过系统 OpenSSH 建立 SSH 隧道（既不会使用、也不会成为 `~/.ssh/config` 中共享的 `ControlMaster` 连接）；可按连接要求在执行写操作前确认。
+- **多窗口**：每个窗口使用独立的连接，可以把不同的服务器并排打开，也可以为同一台服务器开两个视图。文件 ▸ 新建 CcinnMysql 窗口（File ▸ New CcinnMysql Window，⌘N）打开连接页面；**New Window with This Connection**（⇧⌘N，或工具栏的 New Window 按钮）沿用当前连接和正在使用的密码再开一个窗口，未保存的连接和没有存入钥匙串的密码同样适用；已保存的连接可以右键选择 **Open in New Window**。关闭窗口只会断开该窗口自己的连接。
 - **MCP 服务器**：让 Claude Code、Codex、Claude Desktop、Cursor 查询你授权的连接，默认只读。
 
 ## 兼容性
@@ -120,8 +122,9 @@ CcinnMysql 每天也会在后台自动检查一次，可以在 **设置 → 通�
 | **⌘E** / **⇧⌘E** | Explain / Explain Analyze（会实际执行查询） |
 | **⌘.** | 取消正在执行的语句（`KILL QUERY`） |
 | **⌃Space** | 显示补全 |
+| **⌥⌘L** | 格式化 SQL（选中内容或整个脚本） |
 | **⌘T** | 新建查询 |
-| **⌘N** | 新建窗口（连接另一台服务器，或同一台） |
+| **⌘N** | 新建 CcinnMysql 窗口（New CcinnMysql Window）：连接另一台服务器，或同一台 |
 | **⇧⌘N** | 用当前连接新建窗口 |
 | **⌥⌘1** / **⌥⌘2** | 服务器概览 / 会话列表 |
 | **⇧⌘R** | 刷新库表 |
@@ -172,15 +175,22 @@ CcinnMysql 内置 **Model Context Protocol** 服务器。Claude Code、Codex、C
 - 每次调用都记录到 `~/Library/Application Support/CcinnMysql/mcp-audit.jsonl`（凭据已脱敏，文件权限 0600）。
 - 每次调用都使用独立的会话，结束后立即关闭，因此会话状态（用户变量、`SET SESSION`、临时表、命名锁）不会延续到下一次调用。
 - MCP 连接会以 `program_name = 'CcinnMysql MCP'`（`_pid` 为进程号）向服务器表明身份，DBA 可以在 `performance_schema.session_connect_attrs` 中找到 AI 会话。
+- 只读调用总是按服务器的默认方式解析 SQL：会改变解析方式的 `sql_mode`（`NO_BACKSLASH_ESCAPES`、`ANSI_QUOTES`、MariaDB 的 `ORACLE`、`PIPES_AS_CONCAT` 等）在调用期间被移除；每个连接都使用 `utf8mb4`（即使服务器把新连接切换为 GBK 或 Shift-JIS）；任何一项无法保证时调用会被拒绝。检查针对实际发送的文本（包括自动添加的 `LIMIT`）。
+- 密码哈希和其他会话的语句不可读取：`run_query` 默认拒绝整个 `mysql`、`performance_schema` 和 `sys` 库，以及会显示其他会话语句的 `information_schema` 视图（`PROCESSLIST`、`INNODB_TRX` 等）、`SHOW PROCESSLIST`、`SHOW ENGINE INNODB STATUS`、`EXPLAIN FOR CONNECTION` 和 MariaDB 的 `SHOW EXPLAIN` / `SHOW ANALYZE … FOR`（会显示其他会话的执行计划及其中的值）、`SHOW REPLICA STATUS`（其最近错误会引用复制过来的语句）、`SHOW BINLOG EVENTS` / `SHOW RELAYLOG EVENTS`（复制过来的语句），以及 `SHOW GRANTS` / `SHOW CREATE USER`（MariaDB 的 `SHOW GRANTS` 会输出账号的密码哈希）。`get_processlist`、`get_innodb_status` 和 `get_top_statements` 显示其他会话的语句时，所有字面量都会替换为 `?`；`get_replication_status` 会把最近 SQL 错误中引号括起的部分替换为 `?`。
+- 函数：只读调用只能使用服务器类型对应的、经过审查的内置函数（已在 MySQL 8.4 和 MariaDB 10.11 上验证，包括 `REPLACE()`、`INSERT()` 和 `TRUNCATE()`）。可加载函数（UDF）、组件函数和存储函数——无论是带库名限定、加反引号，还是内置函数名与 `(` 之间有空格（此时服务器会把它当作存储函数查找）——都需要在 **Settings → MCP** 中为该连接单独允许，因为无法检查其内部；有副作用的内置函数（`SLEEP`、`GET_LOCK`、`LOAD_FILE` 等）始终拒绝。
+- 名称按检查时的样子到达服务器：只读调用拒绝含有会被服务器折叠成 ASCII 字母的字符（`ı`、`İ`、`ſ`、`K`、`ß`、`ﬁ` 等，例如 `processlıst` 在服务器上就是 PROCESSLIST；请用普通字母书写名称）的名称和 `database` 参数，其余名称按 ASCII 骨架（折叠大小写、兼容形式和重音，与 MySQL 排序规则的处理方式一致）与拒绝列表比较，并拒绝任何含有控制字符（例如 NUL）的参数，因为连接无法按原样发送它们。
 
-**“只读”的范围。** 只读意味着 AI 无法修改数据或表结构，但应用无法检查服务器上已有存储函数的内部：查询调用的函数在执行期间仍可能产生副作用，例如 `GET_LOCK`、`SLEEP`，或在服务器允许的情况下执行 `KILL`。如需真正的隔离，请为 MCP 连接使用专用的 MySQL 用户，只授予所需库的 `SELECT` 权限；如果需要诊断类工具，再加上 `PROCESS`、`SHOW VIEW` 和 `performance_schema` 的 `SELECT` 权限：
+**“只读”的范围。** 只读意味着 AI 无法修改数据或表结构，但应用无法检查服务器上已有存储函数或视图的内部：查询调用的函数在执行期间仍可能产生副作用，例如 `GET_LOCK`、`SLEEP`，或在服务器允许的情况下执行 `KILL`。如果账号拥有 `FILE`、`SUPER`、`PROCESS`、任何未被审查为无害的动态权限（所有 `*_ADMIN`、`INNODB_REDO_LOG_ARCHIVE` 等）、全局 `ALL PRIVILEGES`，或对 `*.*`、`mysql.*`、`performance_schema.*`、`sys.*` 的 `SELECT`（包括通过能匹配这些库的库名模式获得，例如 `%`、`my%`、`m_sql`，以及通过角色获得；本机的 `root` 全都具备），这样的函数或视图还可能读写服务器文件、读取密码哈希，或显示其他会话的语句（`PROCESS` 能看到进程列表中的所有会话），因此**只读工具默认拒绝这类账号**，除非你在 **Settings → MCP** 中为该连接单独允许。在 MariaDB 上，账号无法读取通过其他角色间接获得的角色的权限，因此拥有嵌套角色的账号无法检查，同样会被拒绝。请为 MCP 连接使用专用的 MySQL 用户，只授予所需库的 `SELECT` 和 `SHOW VIEW` 权限：
 
 ```sql
 CREATE USER 'ai_ro'@'%' IDENTIFIED BY '…';
 GRANT SELECT, SHOW VIEW ON app.* TO 'ai_ro'@'%';
-GRANT PROCESS ON *.* TO 'ai_ro'@'%';                     -- 可选：进程列表、InnoDB 状态
-GRANT SELECT ON performance_schema.* TO 'ai_ro'@'%';     -- 可选：Top 语句、锁等待
+GRANT PROCESS ON *.* TO 'ai_ro'@'%';                     -- 可选：进程列表、InnoDB 状态（需要单独允许）
 ```
+
+进程列表和 InnoDB 状态工具需要 `PROCESS` 权限，这会让账号被视为高权限账号：如果需要这些工具，请为该连接单独允许。允许之后，AI 可以通过服务器上已有的、读取进程列表的调用者权限（SQL SECURITY INVOKER）视图或例程看到其他会话的语句（包括字面量），只读检查无法看到其内部；这是允许时你所接受的风险。
+
+`get_top_statements` 需要读取 `performance_schema`，也就需要那里的 `SELECT` 权限，这会让账号被视为高权限账号：如果需要这个工具，请为该连接单独允许。以 `SQL SECURITY DEFINER`（默认值）创建的存储函数、存储过程和视图会以定义者的权限执行，对 AI 账号的任何检查都看不到其内部：例如 `root` 创建的、读取进程列表的定义者权限视图，会向任何可以查询它的账号显示所有会话的语句及其中的值，无论该账号是否拥有 `PROCESS`。拒绝高权限账号并不能覆盖这种情况；这是一项已接受的风险，由应用报告：**Settings → MCP** 中的 **Check account** 以及每个只读结果都会列出该账号能调用、且定义者为高权限账号（或无法确认其权限）的定义者权限例程和视图。
 
 另有两个**仅供集成测试使用**的环境变量，不应在日常使用：`CCINNMYSQL_PROFILE_DIR=<路径>` 从其他目录读取连接配置（审计日志也写到那里），`CCINNMYSQL_TEST_INSECURE_SECRETS_FILE=<json>` 从 JSON 文件而不是钥匙串读取密码。
 
@@ -212,15 +222,15 @@ scripts/it-down.sh
 
 ```
 CcinnMysql（SwiftUI / AppKit 应用，同时提供 `CcinnMysql mcp`）
- └─ CcinnMysqlKit   连接配置与钥匙串、SQL 词法/分句/自动 LIMIT、只读守卫、脱敏、补全、
-                    图表、导出、历史、EXPLAIN 解析、表洞察、行编辑、MCP 服务器与工具
+ └─ CcinnMysqlKit   连接配置与钥匙串、SQL 词法/分句/自动 LIMIT、错误诊断、只读守卫、脱敏、
+                    补全、图表、导出、历史、EXPLAIN 解析、表洞察、行编辑、MCP 服务器与工具
      └─ MySQLKit    支持就地 TLS 升级的传输层、连接 actor、连接池、会话、固定到服务器的 KILL、
                     SSH 隧道、发行版/版本识别、元数据与运维
          └─ MySQLWire   数据包分帧、握手、SSLRequest、认证插件（native、caching_sha2、sha256、
                         ed25519、RSA-OAEP）、OK/ERR/EOF、文本结果集——不含 I/O
 ```
 
-- **一个词法分析器贯穿全部功能。** 高亮、分句、语句分类、自动 LIMIT、只读守卫、脱敏和补全共用一个懂 MySQL 注释规则（`-- `、`#`、`/*! … */`）的分词器。
+- **一个词法分析器贯穿全部功能。** 高亮、分句、语句分类、自动 LIMIT、错误定位与输入时检查、只读守卫、脱敏和补全共用一个懂 MySQL 注释规则（`-- `、`#`、`/*! … */`）的分词器。
 - **终止操作命中正确的服务器。** 每个连接都会记录 `CONNECTION_ID()` 与服务器身份；终止时新建连接，只有确认到达同一台服务器后才执行 `KILL QUERY`（经 ProxySQL 时使用代理会话 ID）。
 - **有界且可取消。** 结果集有上限，超大结果会丢弃连接；已取消的任务发起的连接会立即失败；事务中途断线会明确报告，而不是悄悄在新连接上继续。
 - **并发安全。** 连接、连接池和会话都是 Swift actor，项目在 Swift 6 严格并发模式下构建；排序、计划解析、图表准备和导出都不在主线程执行。

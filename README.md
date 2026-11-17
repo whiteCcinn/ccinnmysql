@@ -49,10 +49,12 @@ CcinnMysql puts those answers one click away, in a native SwiftUI/AppKit app wit
 - **Replication & topology** — replica channels (REPLICA and SLAVE vocabularies, MariaDB multi-source), binary log position, connected replicas, Group Replication members, Galera status, InnoDB Cluster metadata, ProxySQL detection.
 - **Variables, status & users** — global/session variables, status counters with per-second rates, accounts with plugin, lock and expiry state, and their grants (read-only, credentials redacted).
 - **Visual EXPLAIN** — `EXPLAIN FORMAT=JSON` (both MySQL formats and MariaDB), `EXPLAIN ANALYZE` (MySQL 8.0.18+) and MariaDB `ANALYZE FORMAT=JSON` as a tree with access types, keys, estimated vs. actual rows, costs and warnings for full scans, filesorts, temporary tables and bad estimates.
-- **SQL workbench** — syntax highlighting, context-aware completion (schemas, tables, columns, aliases, functions), `DELIMITER` support, automatic LIMIT for plain queries only, error underlining from `near '…' at line N`, history (credentials redacted), CSV/TSV/INSERT export and instant charts.
+- **SQL workbench** — syntax highlighting, context-aware completion (schemas, tables, columns, aliases, functions), `DELIMITER` support, automatic LIMIT for plain queries only, history (credentials redacted), CSV/TSV/INSERT export and instant charts.
+- **Precise error markers** — a failed statement's error is underlined where it is: the token where MySQL or MariaDB stopped (also in multi-line statements, when the same text repeats, or when the server shortened its `near '…'`), or the column, table, database, function or variable the message names, using its clause (`in 'where clause'`). The message appears after the line and in a bar under the editor with its line and column; the result shows the error code and **Show in Editor**. Markers follow your edits and disappear once you change the failing statement. Unclosed quotes, comments and parentheses are flagged as you type, without contacting the server.
+- **Format SQL** (⌥⌘L) — lays out the selection or the whole script: one clause per line, one list item per line, indented subqueries, CASE and `CREATE TABLE` columns. It only changes whitespace and the case of keywords every supported server reserves (`order` in `shop.order` stays a name); names, strings, comments and the spacing MySQL cares about (`COUNT(*)` vs `COUNT (*)`, `X'41'`, `\N`, `'root'@'%'`) are untouched, numbers, strings and double quotes are read exactly as the server and the session's `sql_mode` read them, `DELIMITER` scripts keep their commands, and the result is checked token by token before it replaces your text. Undo with ⌘Z. When it changes nothing, the bar under the editor says why.
 - **Safe inline editing** — results from a single base table with a primary key (or a NOT NULL unique key) are editable: CcinnMysql generates the `UPDATE … WHERE <key> LIMIT 1`, shows it, and commits only when exactly one row matched.
-- **Connections** — Keychain secrets, TLS modes (disabled, preferred, required, verify CA, verify identity) with custom CA and client certificates, SSH tunnels through the system OpenSSH client, per-connection confirmation of writes.
-- **Multiple windows** — every window has its own connection, so you can put different servers side by side or keep two views of the same one. File ▸ New Window (⌘N) opens the connection screen; **New Window with This Connection** (⇧⌘N, or the toolbar's New Window button) opens the current server again with the password already in use, even for unsaved connections and passwords not in the Keychain; saved connections have **Open in New Window**. Closing a window disconnects only that window.
+- **Connections** — Keychain secrets, TLS modes (disabled, preferred, required, verify CA, verify identity) with custom CA and client certificates, SSH tunnels through the system OpenSSH client (never using or becoming a shared `ControlMaster` from your `~/.ssh/config`), per-connection confirmation of writes.
+- **Multiple windows** — every window has its own connection, so you can put different servers side by side or keep two views of the same one. File ▸ New CcinnMysql Window (⌘N) opens the connection screen; **New Window with This Connection** (⇧⌘N, or the toolbar's New Window button) opens the current server again with the password already in use, even for unsaved connections and passwords not in the Keychain; saved connections have **Open in New Window**. Closing a window disconnects only that window.
 - **MCP server** — let Claude Code, Codex, Claude Desktop or Cursor query the connections you allow, read-only by default.
 
 ## Compatibility
@@ -120,8 +122,9 @@ The project page, release notes and issue tracker are also in the **Help** menu 
 | **⌘E** / **⇧⌘E** | Explain / Explain Analyze (runs the query) |
 | **⌘.** | Cancel the running statement (`KILL QUERY`) |
 | **⌃Space** | Show completions |
+| **⌥⌘L** | Format SQL (selection or whole script) |
 | **⌘T** | New query |
-| **⌘N** | New window (another server, or the same one) |
+| **⌘N** | New CcinnMysql Window (another server, or the same one) |
 | **⇧⌘N** | New window with this connection |
 | **⌥⌘1** / **⌥⌘2** | Server overview / Processlist |
 | **⇧⌘R** | Refresh schemas |
@@ -172,15 +175,22 @@ CcinnMysql has a built-in **Model Context Protocol** server. AI assistants such 
 - Every call is logged (credentials redacted, file mode 0600) to `~/Library/Application Support/CcinnMysql/mcp-audit.jsonl`.
 - Each call opens its own session and closes it afterwards, so session state (user variables, `SET SESSION`, temporary tables, named locks) never carries over to the next call.
 - MCP connections identify themselves to the server as `program_name = 'CcinnMysql MCP'` (with the process id in `_pid`), so DBAs can find AI sessions in `performance_schema.session_connect_attrs`.
+- Read-only calls run in the server's default reading of SQL: `sql_mode`s that change it (`NO_BACKSLASH_ESCAPES`, `ANSI_QUOTES`, MariaDB's `ORACLE`, `PIPES_AS_CONCAT`, …) are removed for the call, every connection uses `utf8mb4` (also when the server switches new connections to GBK or Shift-JIS), and the call is refused if either cannot be ensured. The check runs on the exact text that is sent, after the automatic `LIMIT`.
+- Password hashes and other sessions' statements are off limits: `run_query` refuses the whole `mysql`, `performance_schema` and `sys` schemas (deny by default), the `information_schema` views that show other sessions' statements (`PROCESSLIST`, `INNODB_TRX`, …), `SHOW PROCESSLIST`, `SHOW ENGINE INNODB STATUS`, `EXPLAIN FOR CONNECTION` and MariaDB's `SHOW EXPLAIN` / `SHOW ANALYZE … FOR` (another session's plan, with its values), `SHOW REPLICA STATUS` (its last error quotes a replicated statement), `SHOW BINLOG EVENTS` / `SHOW RELAYLOG EVENTS` (replicated statements), and `SHOW GRANTS` / `SHOW CREATE USER` (MariaDB's `SHOW GRANTS` prints the account's password hash). `get_processlist`, `get_innodb_status` and `get_top_statements` show other sessions' statements with every literal replaced by `?`, and `get_replication_status` replaces the quoted part of the last SQL error with `?`.
+- Functions: read-only calls may use only the reviewed built-in functions of the server's flavor (checked against MySQL 8.4 and MariaDB 10.11; `REPLACE()`, `INSERT()` and `TRUNCATE()` included). Loadable (UDF), component and stored functions — qualified, back-quoted, or a built-in name written with a space before `(`, which the server then looks up as a stored function — need the connection's allowance in **Settings → MCP**, because what runs inside them can't be checked; built-ins with side effects (`SLEEP`, `GET_LOCK`, `LOAD_FILE`, …) stay refused.
+- Names reach the server as checked: read-only calls refuse names and `database` arguments with a letter the servers fold to ASCII (`ı`, `İ`, `ſ`, `K`, `ß`, `ﬁ`, …: `processlıst` is PROCESSLIST there; write names in plain letters), compare other names with their deny lists by an ASCII skeleton (case, compatibility forms and accents folded, as MySQL's collations may), and refuse any argument with a control character such as NUL, which a connection could not send as written.
 
-**What "read-only" covers.** Read-only means the AI cannot change data or schema. It cannot see inside stored functions that already exist on the server: a function the query calls may still have side effects such as `GET_LOCK`, `SLEEP` or `KILL` (where the server allows it in a function) while the call runs. For real isolation, give the MCP connection a dedicated MySQL user with only `SELECT` on the databases it needs, plus `PROCESS`, `SHOW VIEW` and `SELECT` on `performance_schema` if you want the diagnostics tools:
+**What "read-only" covers.** Read-only means the AI cannot change data or schema. It cannot see inside stored functions or views that already exist on the server: a function the query calls may still have side effects such as `GET_LOCK`, `SLEEP` or `KILL` (where the server allows it in a function) while the call runs. With an account that has `FILE`, `SUPER`, `PROCESS`, any dynamic privilege not reviewed as harmless (every `*_ADMIN`, `INNODB_REDO_LOG_ARCHIVE`, …), global `ALL PRIVILEGES`, or `SELECT` on `*.*`, `mysql.*`, `performance_schema.*` or `sys.*` (also through a database pattern that matches one, such as `%`, `my%` or `m_sql`, and through a role; local `root` has all of them), such a function or view could also write or read server files, read password hashes, or show other sessions' statements (`PROCESS` sees every session in the process list), so **the read-only tools refuse these accounts** unless you allow it for that connection in **Settings → MCP**. On MariaDB an account can't read the grants of a role held through another role, so an account with nested roles can't be checked and is refused the same way. Give the MCP connection a dedicated MySQL user with only `SELECT` and `SHOW VIEW` on the databases it needs:
 
 ```sql
 CREATE USER 'ai_ro'@'%' IDENTIFIED BY '…';
 GRANT SELECT, SHOW VIEW ON app.* TO 'ai_ro'@'%';
-GRANT PROCESS ON *.* TO 'ai_ro'@'%';                     -- optional: processlist, InnoDB status
-GRANT SELECT ON performance_schema.* TO 'ai_ro'@'%';     -- optional: top statements, lock waits
+GRANT PROCESS ON *.* TO 'ai_ro'@'%';                     -- optional: processlist, InnoDB status (needs the allowance)
 ```
+
+The process list and InnoDB status tools need `PROCESS`, which makes the account privileged: allow it for that connection if you want them. With that allowance the AI can see other sessions' statements, literals included, through any existing invoker-rights view or routine over the process list, which the read-only check can't see into; that is the risk you accept by allowing it.
+
+`get_top_statements` reads `performance_schema`, which needs `SELECT` there, and that makes the account privileged: allow it per connection if you want that tool. Stored functions, procedures and views created with `SQL SECURITY DEFINER` (the default) run with their definer's privileges, which no check on the AI's account can see: a definer-rights view that `root` created over the process list shows every session's statements, with their values, to any account that may select from it, whether or not that account has `PROCESS`. Refusing privileged accounts does not cover this; it is an accepted risk that the app reports: **Check account** in **Settings → MCP**, and every read-only result, list the definer-rights routines and views the account can reach whose definer is privileged (or whose privileges it cannot see).
 
 Two environment variables exist **for the integration tests only** and are not meant for normal use: `CCINNMYSQL_PROFILE_DIR=<path>` reads profiles from another folder (the audit log goes there too), and `CCINNMYSQL_TEST_INSECURE_SECRETS_FILE=<json>` reads passwords from a JSON file instead of the Keychain.
 
@@ -212,15 +222,15 @@ scripts/it-down.sh
 
 ```
 CcinnMysql (SwiftUI / AppKit app, also hosts `CcinnMysql mcp`)
- └─ CcinnMysqlKit   profiles & Keychain, SQL lexer/splitter/auto-limit, read-only guard, redaction, completion,
-                    charts, export, history, EXPLAIN parsers, table insights, row editing, MCP server & tools
+ └─ CcinnMysqlKit   profiles & Keychain, SQL lexer/splitter/auto-limit, error diagnostics, read-only guard, redaction,
+                    completion, charts, export, history, EXPLAIN parsers, table insights, row editing, MCP server & tools
      └─ MySQLKit    transport with in-place TLS upgrade, connection actor, pool, sessions, pinned KILL,
                     SSH tunnels, flavor/version detection, metadata and operations
          └─ MySQLWire   packet framing, handshake, SSLRequest, auth plugins (native, caching_sha2, sha256,
                         ed25519, RSA-OAEP), OK/ERR/EOF, text result sets — no I/O
 ```
 
-- **One lexer for everything.** Highlighting, statement splitting, statement classification, auto-limit, the read-only guard, redaction and completion share one tokenizer that knows MySQL's comment rules (`-- `, `#`, `/*! … */`).
+- **One lexer for everything.** Highlighting, statement splitting, statement classification, auto-limit, error locating and checks while typing, the read-only guard, redaction and completion share one tokenizer that knows MySQL's comment rules (`-- `, `#`, `/*! … */`).
 - **Kills that hit the right server.** Every connection records `CONNECTION_ID()` and the server's identity; a kill opens a separate connection and only runs `KILL QUERY` after reaching the same server (or uses the proxy's session id through ProxySQL).
 - **Bounded and cancellable.** Result sets are capped, oversized results drop the connection, connects started from cancelled tasks fail immediately, and a lost transaction is reported instead of silently continuing on a new connection.
 - **Concurrency safety.** Connections, pools and sessions are Swift actors; the project builds in Swift 6 strict-concurrency mode. Sorting, plan parsing, chart preparation and export run off the main thread.

@@ -33,7 +33,7 @@ CCINNMYSQL_PASSWORD=secret dist/CcinnMysql.app/Contents/MacOS/CcinnMysql \
   --connect 127.0.0.1:13384 --user root --database shop --object shop.orders --section insights
 ```
 
-Passwords never go on the command line; use `CCINNMYSQL_PASSWORD`. Other launch arguments: `--tls disabled|preferred|required|verifyCA|verifyIdentity`, `--sql "…" --auto-run [--view grid|chart|plan]`, `--server overview|processlist|innodb|statements|replication|variables|status|users`, `--profile <saved name>`, `--duplicate-window` (once connected, opens a second window with the same connection), `--appearance light|dark`, and `--snapshot <file.png> --snapshot-delay <seconds> --quit-after-snapshot` (renders the key window off-screen without stealing focus or needing screen-recording permission; `--snapshot-window <title>` picks another one).
+Passwords never go on the command line; use `CCINNMYSQL_PASSWORD`. Other launch arguments: `--tls disabled|preferred|required|verifyCA|verifyIdentity`, `--sql "…" [--format] --auto-run [--view grid|chart|plan]` (`--format` formats the text first), `--server overview|processlist|innodb|statements|replication|variables|status|users`, `--profile <saved name>`, `--duplicate-window` (once connected, opens a second window with the same connection), `--appearance light|dark`, and `--snapshot <file.png> --snapshot-delay <seconds> --quit-after-snapshot` (renders the key window off-screen without stealing focus or needing screen-recording permission; `--snapshot-window <title>` picks another one).
 
 ## Project layout
 
@@ -41,14 +41,14 @@ Passwords never go on the command line; use `CCINNMYSQL_PASSWORD`. Other launch 
 |---|---|
 | `MySQLWire` | MySQL protocol: framing, handshake, SSLRequest, authentication plugins (native, caching_sha2, sha256, ed25519, RSA-OAEP), text result sets — no I/O |
 | `MySQLKit` | Transport with in-place TLS, connections, pool, sessions with pinned `KILL QUERY`, SSH tunnels, flavor/version detection, metadata and operations |
-| `CcinnMysqlKit` | UI-independent app logic: profiles, SQL lexer/splitter/auto-limit, read-only guard, redaction, completion, charts, export, history, EXPLAIN parsers, table insights, row editing, MCP |
+| `CcinnMysqlKit` | UI-independent app logic: profiles, SQL lexer/splitter/auto-limit, error diagnostics, read-only guard, redaction, completion, charts, export, history, EXPLAIN parsers, table insights, row editing, MCP |
 | `CcinnMysql` | SwiftUI/AppKit application and the `mcp` subcommand |
 
 Dependencies only point downwards; lower modules must not import higher ones.
 
 ## Guidelines
 
-- **Test first.** Add or update tests with every behaviour change. Protocol logic is covered with the in-memory fake server in `Tests/MySQLKitTests/FakeMySQLServer.swift` (it scripts TLS requests and authentication rounds); server behaviour with the integration suite.
+- **Test first.** Add or update tests with every behaviour change. Protocol logic is covered with the in-memory fake server in `Tests/MySQLKitTests/FakeMySQLServer.swift` (it scripts TLS requests and authentication rounds); server behaviour with the integration suite; editor behaviour (text storage, input methods) in `Tests/CcinnMysqlAppTests`. Error-message handling is tested with messages recorded from real servers.
 - **Read server output by column name.** `SHOW` output and `information_schema` / `performance_schema` tables differ between MySQL, MariaDB and versions; use `Record.text("Name", "AlternativeName")`, never column positions.
 - **Fall back only on server errors.** Optional metadata may degrade when the server rejects a statement, but timeouts, network errors and cancellation must propagate.
 - **Never crash on input.** No force unwraps/casts, unchecked indexing or trapping integer conversions on data that comes from a server, a file or the user. Bound recursion and sizes. Throw a descriptive error instead.
