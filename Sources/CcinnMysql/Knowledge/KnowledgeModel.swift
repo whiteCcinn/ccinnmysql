@@ -60,7 +60,10 @@ final class KnowledgeModel {
         self.store = store
     }
 
-    var key: KnowledgeKey { KnowledgeKey(connectionID: workspace.profile.id, database: database) }
+    var key: KnowledgeKey {
+        let connection: UUID = workspace.profile.id
+        return KnowledgeKey(connectionID: connection, database: database)
+    }
 
     /// Knowledge is kept per saved connection; an unsaved one has a temporary id that is not found again later
     /// (and AI assistants only see saved connections).
@@ -75,24 +78,17 @@ final class KnowledgeModel {
         let key = key
         isLoading = true
         Task {
-            let result = await Task.detached(priority: .userInitiated) {
-                Result { () throws -> (loaded: (knowledge: KnowledgeBase, graph: KnowledgeGraph)?, stale: Set<UUID>, missing: Set<UUID>) in
-                    let loaded = try store.loadWithGraph(key)
-                    let missing = Set(loaded?.knowledge.projects.filter { project in
-                        var isDirectory: ObjCBool = false
-                        return !FileManager.default.fileExists(atPath: project.path, isDirectory: &isDirectory) || !isDirectory.boolValue
-                    }.map(\.id) ?? [])
-                    return (loaded, loaded.map { Self.staleProjects(in: $0.knowledge) } ?? [], missing)
-                }
+            let result: Result<Loaded, any Error> = await Task.detached(priority: .userInitiated) { () -> Result<Loaded, any Error> in
+                Result { try Self.load(store, key) }
             }.value
             guard generation == loadGeneration else { return }
             isLoading = false
             switch result {
-            case let .success((loaded, stale, missing)):
-                knowledge = loaded?.knowledge
-                graph = loaded?.graph
-                staleProjects = stale
-                missingProjects = missing
+            case let .success(loaded):
+                knowledge = loaded.knowledge
+                graph = loaded.graph
+                staleProjects = loaded.stale
+                missingProjects = loaded.missing
                 loadError = nil
                 loadErrorIsDamage = false
                 if let selected = selectedTable, graph?.tables[selected] == nil { selectedTable = nil }
@@ -103,6 +99,25 @@ final class KnowledgeModel {
                 loadErrorIsDamage = (error as? KnowledgeError)?.kind == .damaged
             }
         }
+    }
+
+    /// What a reload reads, off the main actor.
+    private struct Loaded: Sendable {
+        let knowledge: KnowledgeBase?
+        let graph: KnowledgeGraph?
+        let stale: Set<UUID>
+        let missing: Set<UUID>
+    }
+
+    nonisolated private static func load(_ store: KnowledgeStore, _ key: KnowledgeKey) throws -> Loaded {
+        guard let loaded = try store.loadWithGraph(key) else { return Loaded(knowledge: nil, graph: nil, stale: [], missing: []) }
+        var missing = Set<UUID>()
+        for project in loaded.knowledge.projects {
+            var isDirectory: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: project.path, isDirectory: &isDirectory)
+            if !exists || !isDirectory.boolValue { missing.insert(project.id) }
+        }
+        return Loaded(knowledge: loaded.knowledge, graph: loaded.graph, stale: staleProjects(in: loaded.knowledge), missing: missing)
     }
 
     // MARK: Building

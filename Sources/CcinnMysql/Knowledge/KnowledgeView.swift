@@ -10,44 +10,60 @@ struct KnowledgeView: View {
         VStack(spacing: 0) {
             KnowledgeHeader(model: model)
             Divider()
-            if let error = model.loadError {
-                KnowledgeErrorBanner(message: error, canReset: model.loadErrorIsDamage) { model.reset() }
-                Divider()
-            }
-            if !model.isSavedConnection {
-                Label("This connection is not saved. Its knowledge base cannot be found again after you disconnect, and AI assistants only see saved connections: save the connection to keep it.",
-                      systemImage: "exclamationmark.circle")
-                    .font(.callout)
-                    .foregroundStyle(.orange)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(10)
-                Divider()
-            }
-            HStack(spacing: 0) {
-                KnowledgeSidePanel(model: model)
-                    .frame(width: 280)
-                Divider()
-                VStack(spacing: 0) {
-                    HStack(spacing: 10) {
-                        Picker("Section", selection: $model.section) {
-                            ForEach(KnowledgeModel.Section.allCases) { Text($0.rawValue).tag($0) }
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .fixedSize()
-                        Spacer()
-                        TextField("Filter", text: $model.searchText)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(maxWidth: 240)
-                    }
-                    .padding(10)
-                    Divider()
-                    content
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            }
+            banners
+            columns
         }
         .task { model.reload() }
+    }
+
+    @ViewBuilder private var banners: some View {
+        if let error = model.loadError {
+            KnowledgeErrorBanner(message: error, canReset: model.loadErrorIsDamage) { model.reset() }
+            Divider()
+        }
+        if !model.isSavedConnection {
+            Label("This connection is not saved. Its knowledge base cannot be found again after you disconnect, and AI assistants only see saved connections: save the connection to keep it.",
+                  systemImage: "exclamationmark.circle")
+                .font(.callout)
+                .foregroundStyle(.orange)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+            Divider()
+        }
+    }
+
+    private var columns: some View {
+        HStack(spacing: 0) {
+            KnowledgeSidePanel(model: model)
+                .frame(width: 280)
+            Divider()
+            main
+        }
+    }
+
+    private var main: some View {
+        VStack(spacing: 0) {
+            toolbar
+            Divider()
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private var toolbar: some View {
+        HStack(spacing: 10) {
+            Picker("Section", selection: $model.section) {
+                ForEach(KnowledgeModel.Section.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            Spacer()
+            TextField("Filter", text: $model.searchText)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 240)
+        }
+        .padding(10)
     }
 
     @ViewBuilder private var content: some View {
@@ -324,80 +340,127 @@ private struct RelationshipsSection: View {
     @State private var rejecting: KnowledgeGraph.Edge?
     @State private var reason = ""
 
+    // Split into small pieces: one large body is more than older compilers type-check in time.
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Picker("Show", selection: $model.filter) {
-                    ForEach(KnowledgeModel.RelationshipFilter.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .fixedSize()
-                Spacer()
-                Text("\(model.visibleEdges.count) shown").font(.caption).foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            Table(model.visibleEdges, selection: $selection) {
-                TableColumn("From") { edge in
-                    Text(edge.relationship.from.label).font(Theme.monospacedSmall).help(edge.relationship.from.label)
-                }
-                TableColumn("To") { edge in
-                    Text(edge.relationship.to.label).font(Theme.monospacedSmall).help(edge.relationship.to.label)
-                }
-                TableColumn("Kind") { edge in Text(Self.cardinality(edge.cardinality)).font(.caption) }
-                    .width(min: 70, ideal: 90, max: 110)
-                TableColumn("Sources") { edge in
-                    HStack(spacing: 3) { ForEach(edge.relationship.sources, id: \.self) { SourceBadge(source: $0) } }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .clipped()
-                        .help(edge.relationship.sources.map(\.rawValue).joined(separator: ", "))
-                }
-                .width(min: 120, ideal: 250)
-                TableColumn("Confidence") { edge in Text("\(Int((edge.confidence * 100).rounded()))%").monospacedDigit() }
-                    .width(min: 70, ideal: 80, max: 90)
-                TableColumn("Verdict") { edge in
-                    if let verdict = edge.verdict {
-                        Text("\(verdict.status.rawValue) (\(verdict.author == .ai ? "AI" : "you"))")
-                            .font(.caption)
-                            .foregroundStyle(verdict.status == .rejected ? Color.red : Color.green)
-                            .help(verdict.reason ?? "")
-                    }
-                }
-                .width(min: 90, ideal: 120, max: 160)
-            }
-            .contextMenu(forSelectionType: String.self) { ids in
-                if let id = ids.first, let edge = edge(id) {
-                    if !edge.relationship.isDeclared {
-                        Button("Confirm") { model.setVerdict(edge, .confirmed) }
-                        Button("Reject…") {
-                            reason = ""
-                            rejecting = edge
-                        }
-                        if edge.verdict != nil { Button("Clear Verdict") { model.setVerdict(edge, .cleared) } }
-                    }
-                    if model.knowledge?.notes.relationships[edge.id] != nil {
-                        Divider()
-                        Button("Remove Added Relationship") { model.removeAdded(edge) }
-                    }
-                    Divider()
-                    Button("Copy Join Condition") { Pasteboard.copy(Self.join(edge)) }
-                }
-            }
-            if let id = selection.first, let edge = edge(id) {
-                Divider()
-                EvidencePanel(edge: edge, projects: model.knowledge?.projects ?? [])
-            }
+            header
+            table
+            evidence
         }
-        .alert("Reject this relationship?", isPresented: Binding(get: { rejecting != nil }, set: { if !$0 { rejecting = nil } })) {
+        .alert("Reject this relationship?", isPresented: rejectingBinding) {
             TextField("Why is it wrong?", text: $reason)
-            Button("Reject", role: .destructive) {
-                if let edge = rejecting { model.setVerdict(edge, .rejected, reason: reason.isEmpty ? "Rejected in CcinnMysql" : reason) }
-                rejecting = nil
-            }
+            Button("Reject", role: .destructive, action: reject)
             Button("Cancel", role: .cancel) { rejecting = nil }
         } message: {
-            Text("\(rejecting.map { "\($0.relationship.from.label) → \($0.relationship.to.label)" } ?? "")\nJoin paths will no longer use it, also after rebuilds.")
+            Text(rejectMessage)
         }
+    }
+
+    private var header: some View {
+        HStack {
+            Picker("Show", selection: $model.filter) {
+                ForEach(KnowledgeModel.RelationshipFilter.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .fixedSize()
+            Spacer()
+            Text("\(model.visibleEdges.count) shown").font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+    }
+
+    private var table: some View {
+        Table(model.visibleEdges, selection: $selection) {
+            TableColumn("From") { (edge: KnowledgeGraph.Edge) in endText(edge.relationship.from.label) }
+            TableColumn("To") { (edge: KnowledgeGraph.Edge) in endText(edge.relationship.to.label) }
+            TableColumn("Kind") { (edge: KnowledgeGraph.Edge) in Text(Self.cardinality(edge.cardinality)).font(.caption) }
+                .width(min: 70, ideal: 90, max: 110)
+            TableColumn("Sources") { (edge: KnowledgeGraph.Edge) in sourcesView(edge) }
+                .width(min: 120, ideal: 250)
+            TableColumn("Confidence") { (edge: KnowledgeGraph.Edge) in Text(Self.percent(edge.confidence)).monospacedDigit() }
+                .width(min: 70, ideal: 80, max: 90)
+            TableColumn("Verdict") { (edge: KnowledgeGraph.Edge) in verdictView(edge) }
+                .width(min: 90, ideal: 120, max: 160)
+        }
+        .contextMenu(forSelectionType: String.self) { (ids: Set<String>) in
+            menu(ids)
+        }
+    }
+
+    @ViewBuilder private var evidence: some View {
+        if let id = selection.first, let edge = edge(id) {
+            Divider()
+            EvidencePanel(edge: edge, projects: model.knowledge?.projects ?? [])
+        }
+    }
+
+    private func endText(_ label: String) -> some View {
+        Text(label).font(Theme.monospacedSmall).help(label)
+    }
+
+    private func sourcesView(_ edge: KnowledgeGraph.Edge) -> some View {
+        let names: String = edge.relationship.sources.map(\.rawValue).joined(separator: ", ")
+        return HStack(spacing: 3) {
+            ForEach(edge.relationship.sources, id: \.self) { SourceBadge(source: $0) }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .clipped()
+        .help(names)
+    }
+
+    @ViewBuilder private func verdictView(_ edge: KnowledgeGraph.Edge) -> some View {
+        if let verdict = edge.verdict {
+            let who: String = verdict.author == .ai ? "AI" : "you"
+            let color: Color = verdict.status == .rejected ? .red : .green
+            Text("\(verdict.status.rawValue) (\(who))")
+                .font(.caption)
+                .foregroundStyle(color)
+                .help(verdict.reason ?? "")
+        }
+    }
+
+    @ViewBuilder private func menu(_ ids: Set<String>) -> some View {
+        if let id = ids.first, let edge = edge(id) {
+            if !edge.relationship.isDeclared {
+                Button("Confirm") { model.setVerdict(edge, .confirmed) }
+                Button("Reject…") {
+                    reason = ""
+                    rejecting = edge
+                }
+                if edge.verdict != nil {
+                    Button("Clear Verdict") { model.setVerdict(edge, .cleared) }
+                }
+            }
+            if model.knowledge?.notes.relationships[edge.id] != nil {
+                Divider()
+                Button("Remove Added Relationship") { model.removeAdded(edge) }
+            }
+            Divider()
+            Button("Copy Join Condition") { Pasteboard.copy(Self.join(edge)) }
+        }
+    }
+
+    private var rejectingBinding: Binding<Bool> {
+        Binding(get: { rejecting != nil }, set: { if !$0 { rejecting = nil } })
+    }
+
+    private var rejectMessage: String {
+        let label: String = rejecting.map { "\($0.relationship.from.label) → \($0.relationship.to.label)" } ?? ""
+        return label + "\nJoin paths will no longer use it, also after rebuilds."
+    }
+
+    private func reject() {
+        if let edge = rejecting {
+            let why: String = reason.isEmpty ? "Rejected in CcinnMysql" : reason
+            model.setVerdict(edge, .rejected, reason: why)
+        }
+        rejecting = nil
+    }
+
+    static func percent(_ confidence: Double) -> String {
+        let value: Int = Int((confidence * 100).rounded())
+        return "\(value)%"
     }
 
     private func edge(_ id: String) -> KnowledgeGraph.Edge? {
@@ -728,44 +791,90 @@ private struct NeighbourhoodDiagram: View {
         return result
     }
 
+    /// Where everything goes, computed in typed steps (older compilers give up on this arithmetic inside a view body).
+    private struct Layout {
+        struct Placed: Identifiable {
+            let neighbour: Neighbour
+            let point: CGPoint
+            let labelPoint: CGPoint
+            var id: String { neighbour.id }
+        }
+
+        let middle: CGPoint
+        let placed: [Placed]
+    }
+
+    private static func layout(_ items: [Neighbour], in size: CGSize) -> Layout {
+        let middle = CGPoint(x: size.width / 2, y: size.height / 2)
+        let shorter: CGFloat = min(size.width, size.height)
+        let radius: CGFloat = max(80, shorter / 2 - 50)
+        let count: Double = Double(max(items.count, 1))
+        var placed: [Layout.Placed] = []
+        placed.reserveCapacity(items.count)
+        for (index, item) in items.enumerated() {
+            let fraction: Double = Double(index) / count
+            let angle: Double = fraction * 2 * Double.pi - Double.pi / 2
+            let x: CGFloat = middle.x + radius * CGFloat(cos(angle))
+            let y: CGFloat = middle.y + radius * CGFloat(sin(angle))
+            let labelX: CGFloat = (middle.x + x) / 2
+            let labelY: CGFloat = (middle.y + y) / 2
+            placed.append(Layout.Placed(neighbour: item, point: CGPoint(x: x, y: y), labelPoint: CGPoint(x: labelX, y: labelY)))
+        }
+        return Layout(middle: middle, placed: placed)
+    }
+
     var body: some View {
         GeometryReader { geometry in
-            let size = geometry.size
-            let middle = CGPoint(x: size.width / 2, y: size.height / 2)
-            let radius = max(80, min(size.width, size.height) / 2 - 50)
-            let items = neighbours
-            let points = items.indices.map { index -> CGPoint in
-                let angle = Double(index) / Double(max(items.count, 1)) * 2 * .pi - .pi / 2
-                return CGPoint(x: middle.x + radius * cos(angle), y: middle.y + radius * sin(angle))
+            diagram(Self.layout(neighbours, in: geometry.size))
+        }
+    }
+
+    private func diagram(_ layout: Layout) -> some View {
+        ZStack {
+            lines(layout)
+            ForEach(layout.placed) { placed in
+                neighbourView(placed)
             }
-            ZStack {
-                Canvas { context, _ in
-                    for (index, item) in items.enumerated() {
-                        var path = Path()
-                        path.move(to: middle)
-                        path.addLine(to: points[index])
-                        context.stroke(path, with: .color(.secondary.opacity(0.6)),
-                                       style: StrokeStyle(lineWidth: 1.2, dash: item.solid ? [] : [5, 4]))
-                    }
-                }
-                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                    Text(item.label)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 3)
-                        .background(.background.opacity(0.8))
-                        .position(x: (middle.x + points[index].x) / 2, y: (middle.y + points[index].y) / 2)
-                    Button { select(item.table) } label: { node(item.table, emphasized: false) }
-                        .buttonStyle(.plain)
-                        .position(points[index])
-                }
-                node(center, emphasized: true).position(middle)
-                if items.isEmpty {
-                    Text("No known relationships").font(.caption).foregroundStyle(.secondary).position(x: middle.x, y: middle.y + 40)
-                }
+            node(center, emphasized: true).position(layout.middle)
+            if layout.placed.isEmpty {
+                emptyHint(at: layout.middle)
             }
         }
     }
+
+    private func lines(_ layout: Layout) -> some View {
+        Canvas { context, _ in
+            let color: Color = .secondary.opacity(0.6)
+            for placed in layout.placed {
+                var path = Path()
+                path.move(to: layout.middle)
+                path.addLine(to: placed.point)
+                let dash: [CGFloat] = placed.neighbour.solid ? [] : [5, 4]
+                context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 1.2, dash: dash))
+            }
+        }
+    }
+
+    @ViewBuilder private func neighbourView(_ placed: Layout.Placed) -> some View {
+        Text(placed.neighbour.label)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 3)
+            .background(.background.opacity(0.8))
+            .position(placed.labelPoint)
+        Button { select(placed.neighbour.table) } label: { node(placed.neighbour.table, emphasized: false) }
+            .buttonStyle(.plain)
+            .position(placed.point)
+    }
+
+    private func emptyHint(at middle: CGPoint) -> some View {
+        let point = CGPoint(x: middle.x, y: middle.y + 40)
+        return Text("No known relationships").font(.caption).foregroundStyle(.secondary).position(point)
+    }
+
+    private static let emphasizedFill: Color = Theme.accent.opacity(0.18)
+    private static let plainFill: Color = Color.secondary.opacity(0.1)
+    private static let plainStroke: Color = Color.secondary.opacity(0.4)
 
     private func node(_ table: String, emphasized: Bool) -> some View {
         Text(table)
@@ -773,8 +882,8 @@ private struct NeighbourhoodDiagram: View {
             .lineLimit(1)
             .padding(.horizontal, 8)
             .padding(.vertical, 5)
-            .background((emphasized ? Theme.accent.opacity(0.18) : Color.secondary.opacity(0.1)), in: RoundedRectangle(cornerRadius: 6))
-            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(emphasized ? Theme.accent : Color.secondary.opacity(0.4)))
+            .background(emphasized ? Self.emphasizedFill : Self.plainFill, in: RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(emphasized ? Theme.accent : Self.plainStroke))
             .fixedSize()
     }
 }
