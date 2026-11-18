@@ -10,7 +10,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="CcinnMysql"
 BUNDLE_ID="io.github.whiteccinn.ccinnmysql"
-VERSION="${CCINNMYSQL_VERSION:-1.3.1}"
+VERSION="${CCINNMYSQL_VERSION:-1.4.0}"
 DIST="$ROOT/dist"
 APP="$DIST/$APP_NAME.app"
 ICON="$ROOT/Resources/AppIcon.icns"
