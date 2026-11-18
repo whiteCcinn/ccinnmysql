@@ -56,6 +56,8 @@ CcinnMysql puts those answers one click away, in a native SwiftUI/AppKit app wit
 - **Connections** — Keychain secrets, TLS modes (disabled, preferred, required, verify CA, verify identity) with custom CA and client certificates, SSH tunnels through the system OpenSSH client (never using or becoming a shared `ControlMaster` from your `~/.ssh/config`), per-connection confirmation of writes.
 - **Multiple windows** — every window has its own connection, so you can put different servers side by side or keep two views of the same one. File ▸ New CcinnMysql Window (⌘N) opens the connection screen; **New Window with This Connection** (⇧⌘N, or the toolbar's New Window button) opens the current server again with the password already in use, even for unsaved connections and passwords not in the Keychain; saved connections have **Open in New Window**. Closing a window disconnects only that window.
 - **MCP server** — let Claude Code, Codex, Claude Desktop or Cursor query the connections you allow, read-only by default.
+- **Move to another Mac** — export connections (passwords optional, encrypted), knowledge bases and linked folders to one file and import it on the new Mac; paths follow your home folder.
+- **Knowledge base** — per database, maps how the tables relate. It uses declared foreign keys, naming conventions, the joins in view and routine definitions, and the joins in the code folders you link. AI assistants then find tables, join paths and ER diagrams in it without exploring table by table, and record what they verify, with evidence, for later sessions.
 
 ## Compatibility
 
@@ -164,6 +166,7 @@ CcinnMysql has a built-in **Model Context Protocol** server. AI assistants such 
 | Schema | `list_databases`, `list_tables`, `describe_table`, `get_indexes` |
 | Diagnostics | `get_processlist`, `get_innodb_status`, `get_top_statements`, `get_replication_status` |
 | SQL | `run_query`, `explain_query`, and `execute_statement` (read & write connections only) |
+| Knowledge | `knowledge_status`, `knowledge_build`, `knowledge_search`, `knowledge_context`, `knowledge_join_path`, `knowledge_erd`, `knowledge_annotate` (see [Knowledge base](#knowledge-base-teach-ai-your-schema)) |
 
 **Safety**
 
@@ -194,6 +197,67 @@ The process list and InnoDB status tools need `PROCESS`, which makes the account
 
 Two environment variables exist **for the integration tests only** and are not meant for normal use: `CCINNMYSQL_PROFILE_DIR=<path>` reads profiles from another folder (the audit log goes there too), and `CCINNMYSQL_TEST_INSECURE_SECRETS_FILE=<json>` reads passwords from a JSON file instead of the Keychain.
 
+## Knowledge base: teach AI your schema
+
+Every new AI session otherwise rediscovers a database from scratch: it describes table after table, then guesses how they join. Most production schemas declare few foreign keys, so the guesses are often wrong, and whatever one session learns is lost. The knowledge base keeps that knowledge per database, on your Mac, and serves it to AI assistants through the MCP server.
+
+**Facts and judgements are kept apart.** A build computes the facts. Facts are reproducible, cost no tokens and carry their source and confidence:
+
+| Source | What it finds | Confidence |
+|---|---|---|
+| `declared` | Foreign keys | 1.0 |
+| `view`, `routine` | `JOIN … ON` / `USING` / comma-join equalities in view, procedure, function, trigger and event definitions | 0.9 |
+| `code` | The same in the source files of the folders you link (Go, Java, MyBatis XML, Python, TypeScript, `.sql`, …), with file and line | 0.9 |
+| `naming` | `user_id` → `users.id`, `userId`, shared prefixes (`shop_orders.customer_id` → `shop_customers`), plurals, `parent_id` self references, keys named like the column (`dsp_id`); type-checked, polymorphic `*_id` + `*_type` pairs skipped | ≤ 0.85 |
+
+Judgements come from AI assistants (`ai`) or from you (`user`). They are table purposes, column notes with value meanings (`status 3 = paused`), glossary terms with a read-only SQL recipe, relationships the build cannot see, and verdicts that confirm or reject inferred ones. Each records who wrote it and when. An added relationship needs evidence: a file in a linked project, or the query that verified it. A rejected relationship is never used for join paths, also after rebuilds. An AI cannot change or delete what you wrote.
+
+**In the app.** Click **Knowledge** in the toolbar, or right-click a database → **Knowledge Base**:
+
+1. **Link Folder…** adds the code repositories that use the database (any number, and one repository can be linked to several databases).
+2. **Build** reads metadata only (no rows), finds relationships and scans the linked folders. Rebuilding keeps every note and verdict, reports added, removed and changed tables, and flags notes whose table or column disappeared. **Rebuild Schema Only** skips the code scan.
+3. **Relationships**, **Tables**, **Notes** and **Diagram** show what is known:
+   - relationships with their sources and confidence, plus Confirm / Reject in the context menu and the evidence with **Reveal** in Finder;
+   - for each table, its purpose, columns with meanings, relationships and the code that uses it;
+   - a neighbourhood diagram.
+4. **Export** → **Copy Mermaid ER Diagram**, or **Export Markdown…**. The Markdown is a file you can commit next to the code, so teammates, and AI tools without MCP, read the same knowledge. It contains no host, user or local paths.
+
+**For AI assistants.** The MCP server's instructions tell them to call `knowledge_status` first. They then use these tools, all offline (no queries):
+- `knowledge_search` finds the tables for a question by names, comments, notes, value meanings and glossary (English or CJK).
+- `knowledge_context` gives columns, notes, relationships with join conditions, and code locations.
+- `knowledge_join_path` gives the most reliable path between two tables as ready-to-use `FROM … JOIN … ON`.
+- `knowledge_erd` returns a Mermaid `erDiagram` of a neighbourhood.
+
+`knowledge_build` creates or refreshes a knowledge base (metadata only, with the same account checks as the other tools). `knowledge_annotate` records what the AI verified. Ask, for example:
+
+- *"Which tables do I need for daily revenue per advertiser, and how do they join?"*
+- *"Draw the ER diagram around `orders`."*
+- *"Check whether `ads.slot_id` really references `slots.id` and record the result."*
+
+**Storage and privacy.**
+- Knowledge bases are kept in `~/Library/Application Support/CcinnMysql/Knowledge/<connection>/<database>.json`: owner-only (0600 files in a 0700 folder), one file per database, readable by the app and every MCP process. They hold metadata and annotations, never row data.
+- From code, only table and column names, relative paths and line numbers are kept, never code text.
+- Only folders you link in the app are scanned. AI assistants cannot add folders. Symbolic links, hidden folders, dependency and build folders (`node_modules`, `vendor`, `target`, …), binary files and files over 1 MB are skipped, and a build stops at 20,000 files or 256 MB and says so.
+- Several AI clients and the app can update the same knowledge base at once. Writes are serialized per file, and a file that cannot be read, or that a newer version wrote, is never overwritten (**Reset…** in the app moves it aside).
+- Knowledge belongs to a saved connection: save a quick connection to keep its knowledge, and AI assistants only see connections enabled for AI access.
+
+## Moving to another Mac
+
+**File ▸ Export Connections & Knowledge…** (or **Settings → Backup**) writes one `.ccinnmysql-backup` file, readable only by you. It contains your saved connections with every setting, and optionally:
+
+- the knowledge bases of those connections, with relationships, notes and linked folders;
+- their passwords, SSH secrets and client-certificate passphrases, encrypted with a passphrase you choose (PBKDF2-HMAC-SHA256 with 600,000 iterations, then AES-256-GCM). Without a passphrase the file contains no secrets.
+
+Query history and row data are never included.
+
+On the new Mac, **File ▸ Import Connections & Knowledge…** merges the backup into what is there:
+- New connections are added. Existing ones are kept unless you choose to replace them.
+- Passwords are restored into the Keychain with the right passphrase. A wrong passphrase changes nothing, and you can also import without passwords.
+- Knowledge bases are merged: the newer note wins, your own notes never give way to an AI's, linked folders are added, and the more recent build's schema facts are kept.
+- Paths under your old home folder (linked folders, certificate and key files) are moved to the new home folder when they exist there. The summary lists the rest, and a missing linked folder gets **Locate…** in the Knowledge tab, which keeps its name and the evidence that cites it.
+
+The import neither connects to servers nor scans code.
+
 ## Building from source
 
 Requirements: macOS 14+, Xcode 16 or later (Swift 6).
@@ -223,7 +287,8 @@ scripts/it-down.sh
 ```
 CcinnMysql (SwiftUI / AppKit app, also hosts `CcinnMysql mcp`)
  └─ CcinnMysqlKit   profiles & Keychain, SQL lexer/splitter/auto-limit, error diagnostics, read-only guard, redaction,
-                    completion, charts, export, history, EXPLAIN parsers, table insights, row editing, MCP server & tools
+                    completion, charts, export, history, EXPLAIN parsers, table insights, row editing, MCP server & tools,
+                    knowledge base (snapshot, naming inference, SQL join extraction, code scan, graph, ERD, locked store)
      └─ MySQLKit    transport with in-place TLS upgrade, connection actor, pool, sessions, pinned KILL,
                     SSH tunnels, flavor/version detection, metadata and operations
          └─ MySQLWire   packet framing, handshake, SSLRequest, auth plugins (native, caching_sha2, sha256,

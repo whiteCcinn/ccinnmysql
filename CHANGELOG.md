@@ -6,6 +6,29 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **Knowledge base** per database: maps how the tables relate and keeps what AI assistants learn about them.
+  - **Built from facts** (metadata only, no rows):
+    - declared foreign keys;
+    - naming conventions (`user_id` → `users.id`, camelCase, shared prefixes, plurals, self references, keys named like the column; type-checked, polymorphic pairs skipped);
+    - `JOIN … ON`, `USING` and comma-join equalities in view, routine, trigger and event definitions;
+    - the same in the source files of the code folders you link, with file and line.
+
+    Every relationship lists its sources, confidence and evidence. Rebuilds keep notes, report added, removed and changed tables, and flag outdated notes.
+  - **Judgements with provenance:** table purposes, column notes with value meanings, glossary terms with a read-only SQL recipe, relationships with evidence, and verdicts. Each records its author (AI or user) and time. An AI cannot change what the user wrote; rejected relationships are never used.
+  - **Knowledge tab** (toolbar, or a database's context menu):
+    - linked folders, and build with progress and cancel;
+    - relationships with Confirm / Reject and evidence, and tables with notes and code locations;
+    - notes review and a neighbourhood diagram;
+    - Copy Mermaid ER Diagram and Export Markdown (no host, user or local paths).
+  - **MCP tools:** `knowledge_status`, `knowledge_build`, `knowledge_search` (also CJK), `knowledge_context`, `knowledge_join_path` (ready-to-use `JOIN … ON`), `knowledge_erd` (Mermaid) and `knowledge_annotate`. All but `knowledge_build` work offline. The server instructions tell AIs to consult the knowledge base before exploring table by table.
+  - **Storage:** local, owner-only files, one per connection and database. Writes from the app and several MCP processes are serialized per file, and unreadable or newer-format files are never overwritten.
+- **Move to another Mac** (File ▸ Export / Import Connections & Knowledge…, Settings → Backup).
+  - **Export:** one owner-only backup file with the saved connections and, optionally, their knowledge bases and their secrets. Secrets are encrypted with a passphrase (PBKDF2-HMAC-SHA256 with 600,000 iterations, AES-256-GCM).
+  - **Import:** a merge. Connections are matched by id and replaced only on request. Passwords are restored only with the right passphrase, and a wrong one changes nothing. Knowledge bases are merged per note, newer first and the user's notes over an AI's. Paths under the old home folder follow the new one.
+  - **Locate…** repoints a linked folder that moved, keeping its name and evidence.
+
 ## [1.4.0] - 2026-11-19
 
 ### Added
