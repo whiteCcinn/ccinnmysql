@@ -99,6 +99,7 @@ private struct DatabaseRow: View {
                 Button("Refresh") { workspace.loadObjects(database: database, force: true) }
                 Divider()
                 Button("Top Statements") { workspace.openServer(section: .statements) }
+                Button("Knowledge Base") { workspace.openKnowledge(database: database) }
                 Divider()
                 Button("Copy Name") { Pasteboard.copy(database) }
             }

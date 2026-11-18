@@ -15,6 +15,7 @@ struct WorkspaceTab: Identifiable, Equatable {
         case object(ObjectDetailModel)
         case sql(SQLTabModel)
         case server(ServerModel)
+        case knowledge(KnowledgeModel)
     }
 
     let id = UUID()
@@ -27,6 +28,7 @@ struct WorkspaceTab: Identifiable, Equatable {
         case let .object(model): model.object.name
         case let .sql(model): model.title
         case .server: "Server"
+        case .knowledge: "Knowledge"
         }
     }
 
@@ -35,6 +37,7 @@ struct WorkspaceTab: Identifiable, Equatable {
         case let .object(model): model.object.schema
         case let .sql(model): model.database
         case .server: nil
+        case let .knowledge(model): model.database
         }
     }
 
@@ -43,6 +46,7 @@ struct WorkspaceTab: Identifiable, Equatable {
         case let .object(model): Theme.icon(for: model.object.kind)
         case .sql: "chevron.left.forwardslash.chevron.right"
         case .server: "gauge.with.dots.needle.67percent"
+        case .knowledge: "brain"
         }
     }
 }
@@ -280,6 +284,28 @@ final class WorkspaceModel {
         selectedTabID = tab.id
     }
 
+    /// The knowledge base of `database` (default: the database in context), one tab per database.
+    func openKnowledge(database: String? = nil) {
+        guard let database = database ?? currentDatabase else {
+            showToast("Choose a database in the sidebar first", isError: true)
+            return
+        }
+        if let existing = tabs.first(where: { if case let .knowledge(model) = $0.kind { model.database == database } else { false } }) {
+            selectedTabID = existing.id
+            return
+        }
+        let model = KnowledgeModel(workspace: self, database: database, store: AppServices.shared.knowledgeStore)
+        let tab = WorkspaceTab(kind: .knowledge(model))
+        tabs.append(tab)
+        selectedTabID = tab.id
+    }
+
+    /// The database of the selected tab, else the sidebar's.
+    var currentDatabase: String? {
+        if case let .knowledge(model)? = selectedTab?.kind { return model.database }
+        return sidebarContextHint()
+    }
+
     func close(_ tab: WorkspaceTab) {
         guard let index = tabs.firstIndex(of: tab) else { return }
         closeResources(of: tab)
@@ -309,6 +335,7 @@ final class WorkspaceModel {
         switch tab.kind {
         case let .sql(model): model.close()
         case let .server(model): model.close()
+        case let .knowledge(model): model.close()
         case .object: break
         }
     }

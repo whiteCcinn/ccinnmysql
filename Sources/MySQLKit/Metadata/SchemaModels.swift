@@ -278,3 +278,23 @@ public struct TableDetail: Sendable {
         self.unavailable = unavailable
     }
 }
+
+/// SQL stored in the server: a view, routine, trigger or event body.
+public struct StoredDefinition: Sendable, Hashable {
+    public enum Kind: String, Sendable, Hashable {
+        case view
+        case routine
+        case trigger
+        case event
+    }
+
+    public let kind: Kind
+    public let name: String
+    public let sql: String
+
+    public init(kind: Kind, name: String, sql: String) {
+        self.kind = kind
+        self.name = name
+        self.sql = sql
+    }
+}

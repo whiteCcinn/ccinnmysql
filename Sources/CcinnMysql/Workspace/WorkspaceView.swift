@@ -63,6 +63,12 @@ struct WorkspaceView: View {
                 }
                 .help("Server overview, InnoDB locks, top statements, replication, variables and users")
                 Button {
+                    workspace.openKnowledge()
+                } label: {
+                    Label("Knowledge", systemImage: "brain")
+                }
+                .help("Knowledge base of the current database: relationships, notes and linked code, shared with AI assistants through MCP")
+                Button {
                     workspace.refreshAll()
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
@@ -122,6 +128,7 @@ struct TabContentView: View {
         case let .object(model): ObjectDetailView(model: model)
         case let .sql(model): SQLWorkbenchView(model: model)
         case let .server(model): ServerView(model: model)
+        case let .knowledge(model): KnowledgeView(model: model)
         }
     }
 }
@@ -168,6 +175,7 @@ private struct WorkspaceHome: View {
                 Button { workspace.openSQL() } label: { Label("New Query", systemImage: "chevron.left.forwardslash.chevron.right") }
                 Button { workspace.openServer(section: .processlist) } label: { Label("Processlist", systemImage: "person.2") }
                 Button { workspace.openServer(section: .overview) } label: { Label("Server", systemImage: "gauge.with.dots.needle.67percent") }
+                Button { workspace.openKnowledge() } label: { Label("Knowledge", systemImage: "brain") }
             }
             .controlSize(.large)
             HStack(spacing: 18) {

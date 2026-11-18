@@ -108,4 +108,6 @@ final class AppServices {
 
     let profiles = ProfileStore()
     let historyDirectory = ProfileRepository.defaultDirectory.appendingPathComponent("History", isDirectory: true)
+    /// Knowledge bases of every window (one cache, per-file locking shared with MCP processes).
+    let knowledgeStore = KnowledgeStore()
 }

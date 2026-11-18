@@ -48,6 +48,10 @@ struct MCPSettingsView: View {
                 Text("CcinnMysql includes a Model Context Protocol server, so AI assistants such as Claude Code, Codex and Claude Desktop can explore your MySQL and MariaDB servers, diagnose locks and slow statements, and run queries through your saved connections. Passwords stay in your Keychain and are never shown to the AI.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                Label("Each database can have a knowledge base (Knowledge in a connected window's toolbar). It records how tables relate, from foreign keys, definitions, naming and the code folders you link, plus notes the AI verified, so AI assistants answer from it instead of exploring table by table.",
+                      systemImage: "brain")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Section("Connections available to AI") {
                 if store.profiles.isEmpty {

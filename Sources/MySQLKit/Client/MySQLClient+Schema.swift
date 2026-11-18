@@ -264,6 +264,68 @@ extension MySQLClient {
         }
     }
 
+    // MARK: Whole-schema metadata (one query each, for knowledge builds)
+
+    /// Indexes of every table of a schema, keyed by table name.
+    public func indexesByTable(schema: String) async throws -> [String: [IndexInfo]] {
+        let result = try await execute("""
+            SELECT * FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = \(SQLText.literal(schema)) \
+            ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX
+            """)
+        return Dictionary(grouping: result.records) { $0.text("TABLE_NAME") ?? "" }
+            .filter { !$0.key.isEmpty }
+            .mapValues { Self.indexes($0) }
+    }
+
+    /// Outgoing foreign keys of every table of a schema, keyed by table name.
+    public func foreignKeysByTable(schema: String) async throws -> [String: [ForeignKeyInfo]] {
+        let result = try await execute("""
+            SELECT k.CONSTRAINT_NAME, k.TABLE_SCHEMA, k.TABLE_NAME, k.COLUMN_NAME, k.ORDINAL_POSITION, k.REFERENCED_TABLE_SCHEMA, \
+            k.REFERENCED_TABLE_NAME, k.REFERENCED_COLUMN_NAME, r.UPDATE_RULE, r.DELETE_RULE \
+            FROM information_schema.KEY_COLUMN_USAGE k JOIN information_schema.REFERENTIAL_CONSTRAINTS r \
+            ON r.CONSTRAINT_SCHEMA = k.CONSTRAINT_SCHEMA AND r.CONSTRAINT_NAME = k.CONSTRAINT_NAME AND r.TABLE_NAME = k.TABLE_NAME \
+            WHERE k.TABLE_SCHEMA = \(SQLText.literal(schema)) AND k.REFERENCED_TABLE_NAME IS NOT NULL \
+            ORDER BY k.TABLE_NAME, k.CONSTRAINT_NAME, k.ORDINAL_POSITION
+            """)
+        return Dictionary(grouping: result.records) { $0.text("TABLE_NAME") ?? "" }
+            .filter { !$0.key.isEmpty }
+            .mapValues { Self.foreignKeys($0, qualifyWithTable: false) }
+    }
+
+    /// SQL stored in a schema: view, routine, trigger and event definitions the account can read. Groups the server
+    /// refuses are reported in `unavailable`; definitions hidden from the account (empty or NULL) are counted there too.
+    public func storedDefinitions(schema: String) async throws -> (definitions: [StoredDefinition], unavailable: [String: String]) {
+        let literal = SQLText.literal(schema)
+        let queries: [(StoredDefinition.Kind, String, String, String)] = [
+            (.view, "TABLE_NAME", "VIEW_DEFINITION", "SELECT TABLE_NAME, VIEW_DEFINITION FROM information_schema.VIEWS WHERE TABLE_SCHEMA = \(literal)"),
+            (.routine, "ROUTINE_NAME", "ROUTINE_DEFINITION",
+             "SELECT ROUTINE_NAME, ROUTINE_DEFINITION FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = \(literal)"),
+            (.trigger, "TRIGGER_NAME", "ACTION_STATEMENT",
+             "SELECT TRIGGER_NAME, ACTION_STATEMENT FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = \(literal)"),
+            (.event, "EVENT_NAME", "EVENT_DEFINITION", "SELECT EVENT_NAME, EVENT_DEFINITION FROM information_schema.EVENTS WHERE EVENT_SCHEMA = \(literal)"),
+        ]
+        var definitions: [StoredDefinition] = []
+        var unavailable: [String: String] = [:]
+        for (kind, nameColumn, sqlColumn, sql) in queries {
+            switch try await attempt(sql) {
+            case let .success(result):
+                var hidden = 0
+                for record in result.records {
+                    guard let name = record.text(nameColumn) else { continue }
+                    guard let body = record.raw(sqlColumn), !body.isEmpty else {
+                        hidden += 1
+                        continue
+                    }
+                    definitions.append(StoredDefinition(kind: kind, name: name, sql: body))
+                }
+                if hidden > 0 { unavailable[kind.rawValue] = "\(hidden) definition(s) are not visible to this account" }
+            case let .failure(error):
+                unavailable[kind.rawValue] = error.message
+            }
+        }
+        return (definitions, unavailable)
+    }
+
     public func partitions(schema: String, table: String) async throws -> [PartitionInfo] {
         let result = try await execute("""
             SELECT PARTITION_NAME, SUBPARTITION_NAME, PARTITION_ORDINAL_POSITION, SUBPARTITION_ORDINAL_POSITION, PARTITION_METHOD, \
