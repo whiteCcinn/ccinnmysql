@@ -43,6 +43,9 @@ private struct SettingsTabs: View {
             MCPSettingsView(store: AppServices.shared.profiles)
                 .tabItem { Label("MCP", systemImage: "sparkles") }
                 .tag("mcp")
+            MigrationSettingsView(store: AppServices.shared.profiles, knowledge: AppServices.shared.knowledgeStore)
+                .tabItem { Label("Backup", systemImage: "externaldrive") }
+                .tag("backup")
         }
     }
 }
@@ -363,8 +366,13 @@ extension FocusedValues {
 struct AppCommands: Commands {
     @FocusedValue(\.windowSession) private var session
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
 
     var body: some Commands {
+        CommandGroup(replacing: .importExport) {
+            Button("Export Connections & Knowledge…") { openBackupSettings() }
+            Button("Import Connections & Knowledge…") { openBackupSettings() }
+        }
         CommandGroup(after: .newItem) {
             // File ▸ New Window (⌘N) comes from the window group and opens the connection screen.
             Button("New Window with This Connection") {
@@ -416,5 +424,11 @@ struct AppCommands: Commands {
                 .keyboardShortcut("[", modifiers: [.command, .shift])
                 .disabled(session?.workspace == nil)
         }
+    }
+
+    /// Settings → Backup (export and import live there).
+    private func openBackupSettings() {
+        UserDefaults.standard.set("backup", forKey: "settingsTab")
+        openSettings()
     }
 }

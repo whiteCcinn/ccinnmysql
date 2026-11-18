@@ -19,6 +19,16 @@ final class ProfileStore {
         }
     }
 
+    /// Re-reads the saved connections (after an import wrote them).
+    func reload() {
+        do {
+            profiles = try repository.load()
+            lastError = nil
+        } catch {
+            lastError = "Could not read saved connections: \(error.localizedDescription)"
+        }
+    }
+
     var favorites: [ConnectionProfile] { profiles.filter(\.isFavorite).sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending } }
     var recents: [ConnectionProfile] { Array(ConnectionProfile.recents(profiles.filter { !$0.isFavorite }).prefix(10)) }
     var others: [ConnectionProfile] {
