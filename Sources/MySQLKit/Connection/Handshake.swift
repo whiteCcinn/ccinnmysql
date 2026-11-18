@@ -29,6 +29,13 @@ enum Handshake {
         }
 
         let database = configuration.database?.trimmingCharacters(in: .whitespaces)
+        // A handshake string ends at NUL: refuse a name holding one before anything is sent, rather than send a different
+        // name than the one given (and checked).
+        let names = HandshakeResponse41(capabilities: [], username: configuration.username, authResponse: [], database: database,
+                                        authPluginName: greeting.authPluginName)
+        if let field = names.fieldWithNUL {
+            throw MySQLError(.invalidArgument, "The \(field) contains a NUL character, which a MySQL handshake cannot carry; nothing was sent.")
+        }
         var capabilities = Capabilities.client.intersection(greeting.capabilities).union(.protocol41)
         if database?.isEmpty != false { capabilities.remove(.connectWithDB) }
 

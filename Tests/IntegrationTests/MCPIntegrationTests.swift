@@ -115,14 +115,18 @@ final class MCPProcess: @unchecked Sendable {
     private var buffer = Data()
     private var messages: [JSONValue] = []
 
-    init(target: IntegrationEnvironment.Target, access: MCPAccess = .readOnly, database: String? = "shop") throws {
+    /// Root by default, allowed for read-only AI access (most suites test the guard as root); `allowsPrivilegedAccount:
+    /// false` tests the refusal.
+    init(target: IntegrationEnvironment.Target, access: MCPAccess = .readOnly, database: String? = "shop", username: String = "root",
+         password: String = IntegrationEnvironment.rootPassword, allowsPrivilegedAccount: Bool = true, port: Int? = nil) throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent("ccinnmysql-mcp-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let profile = ConnectionProfile(name: "IT \(target.label)", host: target.endpoint.host, port: target.endpoint.port, username: "root",
-                                        defaultDatabase: database, connectTimeout: 30, mcpAccess: access)
+        let profile = ConnectionProfile(name: "IT \(target.label)", host: target.endpoint.host, port: port ?? target.endpoint.port, username: username,
+                                        defaultDatabase: database, connectTimeout: 30, mcpAccess: access,
+                                        aiAllowsPrivilegedAccount: allowsPrivilegedAccount)
         try ProfileRepository(directory: directory, secrets: InMemorySecretStore()).save([profile])
         let secrets = directory.appendingPathComponent("secrets.json")
-        let json = "{\"\(profile.id.uuidString)\": {\"password\": \"\(IntegrationEnvironment.rootPassword)\"}}"
+        let json = "{\"\(profile.id.uuidString)\": {\"password\": \"\(password)\"}}"
         FileManager.default.createFile(atPath: secrets.path, contents: Data(json.utf8), attributes: [.posixPermissions: 0o600])
 
         process.executableURL = Self.binary

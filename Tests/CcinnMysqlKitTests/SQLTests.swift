@@ -254,7 +254,7 @@ struct ReadOnlyGuardTests {
     @Test(arguments: [
         "SELECT * FROM t", "  select 1 ; ", "WITH x AS (SELECT 1) SELECT * FROM x", "TABLE t", "VALUES ROW(1)", "SHOW TABLES",
         "SHOW CREATE TABLE t", "DESC t", "DESCRIBE t c", "EXPLAIN SELECT 1", "EXPLAIN FORMAT=JSON SELECT * FROM t",
-        "EXPLAIN ANALYZE SELECT 1", "EXPLAIN FOR CONNECTION 5", "ANALYZE FORMAT=JSON SELECT 1", "SELECT 'DELETE FROM t'",
+        "EXPLAIN ANALYZE SELECT 1", "ANALYZE FORMAT=JSON SELECT 1", "SELECT 'DELETE FROM t'",
         "SELECT `update` FROM t", "SELECT 1 -- DROP TABLE t", "SELECT /* INSERT */ 1", "SELECT JSON_EXTRACT(doc, '$.a') FROM t",
         "SELECT IS_FREE_LOCK('x')", "SELECT @a := 1", "HELP 'SELECT'",
     ])
@@ -300,6 +300,29 @@ struct ReadOnlyGuardTests {
         "(SELECT * FROM t WHERE a IS NOT \\Nlock in share mode)", "SELECT \\Ninto @v",
         "ANALYZE FORMAT=JSON SELECT * FROM t WHERE a IS NOT \\Nlock in share mode",
         "EXPLAIN FORMAT=JSON SELECT * FROM t WHERE a IS NOT \\Nlock in share mode", "SELECT \\N", "SELECT \\Nfrom t", "SELECT \\x",
+        // NUL: other layers may drop it (`LOAD\0_FILE` would reach the server as LOAD_FILE).
+        "SELECT LOAD\0_FILE('/etc/passwd')", "SELECT 1 IN\0TO @v",
+        // Secrets: authentication tables, and statement history that carries other sessions' literals (use get_sessions).
+        "SELECT * FROM mysql.user", "SELECT authentication_string FROM `mysql`.`user`", "SELECT * FROM mysql . global_priv",
+        "TABLE mysql.db", "SELECT * FROM MYSQL.tables_priv", "SELECT 1 FROM t WHERE x IN (SELECT host FROM mysql.proxies_priv)",
+        "SELECT sql_text FROM performance_schema.events_statements_history", "SELECT * FROM performance_schema.events_statements_current",
+        "SELECT * FROM performance_schema.events_transactions_history_long", "SELECT processlist_info FROM performance_schema.threads",
+        "SELECT * FROM performance_schema.processlist", "SELECT sql_text FROM performance_schema.prepared_statements_instances",
+        "SELECT * FROM sys.processlist", "SELECT * FROM sys.x$processlist", "SELECT * FROM sys.session", "SELECT * FROM sys.statement_analysis",
+        "SELECT * FROM sys.statements_with_errors_or_warnings", "SELECT info FROM information_schema.PROCESSLIST",
+        "SELECT info FROM INFORMATION_SCHEMA.processlist", "SHOW PROCESSLIST", "SHOW FULL PROCESSLIST", "SHOW CREATE USER root",
+        "SHOW ENGINE INNODB STATUS", "SHOW BINLOG EVENTS", "SHOW RELAYLOG EVENTS",
+        // Deny by default: the whole of mysql, performance_schema and sys, listed tables or not, views and routines too.
+        "SELECT * FROM mysql.time_zone_name", "SELECT * FROM performance_schema.table_io_waits_summary_by_table",
+        "SELECT * FROM performance_schema.data_locks", "SELECT * FROM sys.schema_unused_indexes", "SELECT sys.format_statement(x) FROM t",
+        "SELECT * FROM information_schema.INNODB_TRX", "SELECT lock_data FROM information_schema.innodb_locks",
+        "SHOW TABLES FROM mysql", "SHOW COLUMNS FROM user IN mysql", "SHOW TABLE STATUS FROM `performance_schema`", "SHOW TABLES IN sys",
+        // Letters the servers fold to ASCII (ſ is S, ﬁ is FI there): such names cannot be checked as the server reads them.
+        "SELECT ſelect FROM t", "SELECT 1 ﬁrst",
+        // Account definitions: MariaDB's SHOW GRANTS prints the account's password hash.
+        "SHOW GRANTS", "SHOW GRANTS FOR CURRENT_USER()",
+        // Another session's plan carries its literals (`attached_condition: … 'card-4111-…'`).
+        "EXPLAIN FOR CONNECTION 5", "SHOW EXPLAIN FOR 5", "SHOW ANALYZE FORMAT=JSON FOR 5",
         // DELIMITER is a client command: the server would see the `;`.
         "DELIMITER ;;\nSELECT 1; SET GLOBAL read_only = 0;;", "DELIMITER //\nSELECT 1 INTO OUTFILE '/tmp/x'//",
     ])
@@ -308,11 +331,81 @@ struct ReadOnlyGuardTests {
     }
 
     // The stricter checks keep ordinary reads: doubled quotes, escaped backslashes, numbers with aliases, hex literals,
-    // non-ASCII names.
-    @Test(arguments: ["SELECT 'it''s'", "SELECT 'a\\\\b'", "SELECT 1.5 AS x, 1e5 y, x'41' z", "SELECT 1.5x", "SELECT ſelect FROM t",
-                      "SELECT 1 ﬁrst", "DELIMITER //\nSELECT 1//"])
+    // non-ASCII names (accented ones; names with a letter the servers fold to ASCII, such as `ſelect` or `ﬁrst`, are refused:
+    // see NameFoldingTests).
+    @Test(arguments: ["SELECT 'it''s'", "SELECT 'a\\\\b'", "SELECT 1.5 AS x, 1e5 y, x'41' z", "SELECT 1.5x", "SELECT sélect FROM t",
+                      "SELECT 1 fírst", "DELIMITER //\nSELECT 1//", "SELECT user, host FROM t", "SELECT * FROM information_schema.TABLES",
+                      "SELECT * FROM information_schema.ROUTINES", "SELECT mysql FROM t", "SHOW TABLES", "SHOW PRIVILEGES"])
     func stillAllowsReadsWrittenUnambiguously(sql: String) {
         #expect(ReadOnlySQLGuard.check(sql) == nil, "\(sql.debugDescription)")
+    }
+
+    // Deny rules match names in any ASCII case, back-quoted or not, whatever lower_case_table_names is: over-blocking a user
+    // schema called `MySQL` on a case-sensitive server is the safe direction, and servers with lctn=1/2 fold it to mysql.
+    @Test(arguments: [
+        "SELECT * FROM MySQL.user", "SELECT * FROM MYSQL.USER", "SELECT * FROM `MySQL`.`user`", "SELECT * FROM `MYSQL` . `User`",
+        "SELECT * FROM `PERFORMANCE_SCHEMA`.events_statements_history", "SELECT * FROM Performance_Schema.Threads",
+        "SELECT * FROM `Performance_Schema`.`Data_Locks`", "SELECT * FROM `Sys`.`X$Processlist`", "SELECT SYS.FORMAT_STATEMENT(x) FROM t",
+        "SELECT info FROM `INFORMATION_SCHEMA`.`PROCESSLIST`", "SELECT * FROM Information_Schema.Innodb_Trx",
+        "SELECT * FROM information_schema.`ProcessList`", "SELECT * FROM `information_schema`.`INNODB_LOCK_WAITS`",
+        "SHOW TABLES FROM `MYSQL`", "SHOW COLUMNS FROM user IN `Sys`", "SHOW TABLE STATUS IN Performance_Schema", "SHOW CREATE TABLE `MySQL`.`User`",
+    ])
+    func secretNamesMatchInAnyCase(sql: String) {
+        #expect(ReadOnlySQLGuard.check(sql) != nil, "\(sql)")
+    }
+
+    @Test func secretDefaultSchemasMatchInAnyCase() {
+        for schema in ["MySQL", "MYSQL", "Performance_Schema", "PERFORMANCE_SCHEMA", "SYS", "Sys", " sys "] {
+            #expect(ReadOnlySQLGuard.check("SELECT 1", defaultDatabase: schema) != nil, "\(schema)")
+        }
+        #expect(ReadOnlySQLGuard.check("SELECT * FROM PROCESSLIST", defaultDatabase: "Information_Schema") != nil)
+        #expect(ReadOnlySQLGuard.check("SELECT * FROM `Innodb_Trx`", defaultDatabase: "INFORMATION_SCHEMA") != nil)
+        #expect(ReadOnlySQLGuard.check("SELECT * FROM TABLES", defaultDatabase: "INFORMATION_SCHEMA") == nil)
+    }
+
+    // Final review E: with an MCP `database` of mysql, performance_schema, sys or information_schema, unqualified names are
+    // looked up there.
+    @Test func secretsAreRefusedInTheirOwnSchemaToo() {
+        #expect(ReadOnlySQLGuard.check("SELECT * FROM user", defaultDatabase: "mysql") != nil)
+        #expect(ReadOnlySQLGuard.check("SELECT 1", defaultDatabase: "MySQL") != nil, "anything there may name an auth table")
+        #expect(ReadOnlySQLGuard.check("SELECT * FROM events_statements_history", defaultDatabase: "performance_schema") != nil)
+        #expect(ReadOnlySQLGuard.check("SELECT * FROM processlist", defaultDatabase: "information_schema") != nil)
+        #expect(ReadOnlySQLGuard.check("SELECT * FROM statement_analysis", defaultDatabase: "sys") != nil)
+        #expect(ReadOnlySQLGuard.check("SELECT * FROM table_io_waits_summary_by_table", defaultDatabase: "performance_schema") != nil)
+        #expect(ReadOnlySQLGuard.check("SELECT 1", defaultDatabase: "sys") != nil)
+        #expect(ReadOnlySQLGuard.check("SELECT * FROM innodb_trx", defaultDatabase: "information_schema") != nil)
+        #expect(ReadOnlySQLGuard.check("SELECT * FROM TABLES", defaultDatabase: "information_schema") == nil)
+        #expect(ReadOnlySQLGuard.check("SELECT * FROM user", defaultDatabase: "shop") == nil)
+    }
+
+    // Final review C: the text sent is AutoLimit's output, so the guard must judge that text the same as the input, whatever
+    // ends the statement. AutoLimit re-lexes its output and adds `LIMIT n` only when every other token is unchanged.
+    @Test func autoLimitNeverChangesTheGuardsVerdict() {
+        let tails = ["", "-", "/", "#", "--", "-- ", "/*", "*", "`", "'", "\"", "/* c */", "# c", "-- c", "*/", "\\", ";", " -", " /", " #x", "\n#",
+                     " /*!", " -- '", "'#'", " `x", " AND 1 = 1 #", "\r", "\u{2028}"]
+        for base in ["SELECT a FROM t", "SELECT a FROM t WHERE b = 1", "WITH x AS (SELECT 1) SELECT * FROM x", "SELECT 1 FROM t ORDER BY 1"] {
+            for tail in tails {
+                let input = base + tail
+                for limit in [1, 1000] {
+                    let outcome = AutoLimit.apply(to: input, limit: limit)
+                    #expect((ReadOnlySQLGuard.check(outcome.sql) == nil) == (ReadOnlySQLGuard.check(input) == nil),
+                            "\(input.debugDescription) -> \(outcome.sql.debugDescription)")
+                    guard outcome.applied else { continue }
+                    let before = SQLLexer(input).tokens()
+                    let after = SQLLexer(outcome.sql).tokens()
+                    #expect(after.count == before.count + 2, "\(outcome.sql.debugDescription)")
+                    #expect(SQLStatementKind.of(outcome.sql) == SQLStatementKind.of(input), "\(outcome.sql.debugDescription)")
+                }
+            }
+        }
+        // The added clause never lands inside a string, a name or a comment that the input leaves open.
+        for input in ["SELECT 'a", "SELECT `a", "SELECT \"a"] {
+            #expect(!AutoLimit.apply(to: input, limit: 10).applied, "\(input)")
+        }
+        #expect(AutoLimit.apply(to: "SELECT a /* x", limit: 10).sql == "SELECT a LIMIT 10 /* x", "before the comment")
+        // In the session's mode: under NO_BACKSLASH_ESCAPES `'C:\'` is complete, with backslash escapes it is open.
+        #expect(AutoLimit.apply(to: "SELECT 'C:\\'", limit: 10, mode: SQLLexingMode(backslashEscapes: false)).sql == "SELECT 'C:\\' LIMIT 10")
+        #expect(!AutoLimit.apply(to: "SELECT 'C:\\'", limit: 10).applied)
     }
 }
 
@@ -499,5 +592,24 @@ struct ChartRobustnessTests {
         let denormal = ChartDataBuilder.build(columns: columns, rows: tiny, spec: ChartSpec(kind: .line, xColumn: 0, yColumns: [1], aggregation: .none),
                                               roles: [.numeric, .numeric])
         #expect(!denormal.points.isEmpty)
+    }
+}
+
+// Final review, item 4: after a statement that may change how the session reads SQL, the editor reads sql_mode and the
+// character set again. `SET CHARACTER SET gbk` once went unnoticed (only sql_mode, names, character_set, charset were
+// looked for).
+@Suite("Statements that may change the session's reading")
+struct SessionReadingChangeTests {
+    @Test(arguments: ["SET CHARACTER SET gbk", "set character set 'sjis'", "SET CHARSET gbk", "SET NAMES gbk", "SET @@session.character_set_client = gbk",
+                      "SET SESSION sql_mode = 'ANSI_QUOTES'", "SET STATEMENT max_statement_time = 1 FOR SELECT 1", "set @x = 1",
+                      "/*!40101 SET NAMES gbk */", "CALL shop.p()", "BEGIN NOT ATOMIC SET NAMES gbk; END", "  -- note\nSET NAMES gbk"])
+    func mayChangeTheReading(sql: String) {
+        #expect(SQLLexingMode.mayBeChanged(by: sql, readAs: .standard), "\(sql)")
+    }
+
+    @Test(arguments: ["SELECT 1", "SELECT 'SET NAMES' AS s", "INSERT INTO t VALUES (1)", "DELETE FROM t WHERE a = 1", "SELECT `set` FROM t",
+                      "SELECT 1 -- SET NAMES gbk"])
+    func doesNotChangeTheReading(sql: String) {
+        #expect(!SQLLexingMode.mayBeChanged(by: sql, readAs: .standard), "\(sql)")
     }
 }

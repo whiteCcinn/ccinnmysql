@@ -183,7 +183,7 @@ final class FakeMySQLServer: ByteTransport, @unchecked Sendable {
                 enqueue([Self.authSwitch(plugin: plugin, nonce: Array(repeating: 5, count: 20))], firstSequence: packet.sequence &+ 1)
             case let .steps(first, then):
                 state.withLockUnchecked {
-                    $0.phase = 1
+                    $0.phase = then.isEmpty ? 2 : 1 // no further auth packets: commands follow
                     $0.remainingSteps = then
                 }
                 enqueue(first, firstSequence: packet.sequence &+ 1)

@@ -51,6 +51,10 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
     public var connectTimeout: Double
     /// AI access through the MCP server (off unless the user opts in).
     public var mcpAccess: MCPAccess
+    /// Read-only AI tools also run for an account that can reach server files, server state, credentials or other
+    /// sessions' statements through functions or views (FILE, SUPER, PROCESS, `*_ADMIN`, …; see `AccountPrivileges`). Off by default: the
+    /// tools refuse such an account.
+    public var aiAllowsPrivilegedAccount: Bool
     public var createdAt: Date
     public var lastConnectedAt: Date?
 
@@ -58,8 +62,8 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
                 defaultDatabase: String? = nil, color: ProfileColor = .none, isFavorite: Bool = false, ssh: SSHTunnelConfiguration? = nil,
                 tlsMode: TLSMode = .preferred, caCertificatePath: String? = nil, clientCertificatePath: String? = nil, allowLegacyTLS: Bool = false,
                 allowCleartextPassword: Bool = false, allowPublicKeyRetrieval: Bool = false, serverPublicKeyPath: String? = nil,
-                confirmMutations: Bool = false, connectTimeout: Double = 10, mcpAccess: MCPAccess = .disabled, createdAt: Date = Date(),
-                lastConnectedAt: Date? = nil) {
+                confirmMutations: Bool = false, connectTimeout: Double = 10, mcpAccess: MCPAccess = .disabled,
+                aiAllowsPrivilegedAccount: Bool = false, createdAt: Date = Date(), lastConnectedAt: Date? = nil) {
         self.id = id
         self.name = name
         self.host = host
@@ -79,6 +83,7 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
         self.confirmMutations = confirmMutations
         self.connectTimeout = connectTimeout
         self.mcpAccess = mcpAccess
+        self.aiAllowsPrivilegedAccount = aiAllowsPrivilegedAccount
         self.createdAt = createdAt
         self.lastConnectedAt = lastConnectedAt
     }
@@ -105,6 +110,7 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
         confirmMutations = try container.decodeIfPresent(Bool.self, forKey: .confirmMutations) ?? false
         connectTimeout = try container.decodeIfPresent(Double.self, forKey: .connectTimeout) ?? 10
         mcpAccess = (try? container.decodeIfPresent(MCPAccess.self, forKey: .mcpAccess)) ?? .disabled
+        aiAllowsPrivilegedAccount = try container.decodeIfPresent(Bool.self, forKey: .aiAllowsPrivilegedAccount) ?? false
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         lastConnectedAt = try container.decodeIfPresent(Date.self, forKey: .lastConnectedAt)
     }

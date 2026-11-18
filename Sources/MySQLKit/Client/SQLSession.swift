@@ -137,7 +137,7 @@ public actor SQLSession {
         if let connection, client.serverInfo.supportsResetConnection, !client.serverInfo.isProxySQL {
             do {
                 try await connection.resetSession()
-                if let database { _ = try await connection.execute("USE \(SQLText.quoteIdentifier(database))") }
+                if let database { _ = try await connection.execute(try SQLText.useStatement(database)) }
                 return
             } catch let error as MySQLError where error.kind == .server {
                 // fall through to a reconnect

@@ -162,10 +162,43 @@ struct ReadOnlySQLGuardTests {
     @Test(arguments: [
         "SELECT 1", "  select * from shop.orders -- comment", "WITH a AS (SELECT 1) SELECT * FROM a", "show index from shop.orders",
         "DESC shop.orders", "explain format=tree select * from t", "SHOW CREATE PROCEDURE shop.p", "SHOW PROCEDURE STATUS", "(SELECT 1) UNION (SELECT 2)",
-        "SELECT 'DELETE FROM t'", "select `insert` from t", "SHOW GRANTS", "SHOW ENGINE INNODB STATUS",
+        "SELECT 'DELETE FROM t'", "select `insert` from t", "SHOW PRIVILEGES",
     ])
     func allowsReads(sql: String) {
         #expect(ReadOnlySQLGuard.check(sql) == nil, "\(sql)")
+    }
+
+    // Final review E: SHOW ENGINE INNODB STATUS prints other sessions' statements (latest deadlock) with their literals; the
+    // get_innodb_status tool returns them with credentials redacted.
+    @Test func innodbStatusGoesThroughItsTool() {
+        #expect(ReadOnlySQLGuard.check("SHOW ENGINE INNODB STATUS") != nil)
+    }
+
+    // SHOW GRANTS prints the account's own password hash on MariaDB (`IDENTIFIED BY PASSWORD '*…'`), SHOW CREATE USER on
+    // both servers: account definitions stay out of read-only mode in every form.
+    @Test(arguments: ["SHOW GRANTS", "show grants", "SHOW GRANTS FOR CURRENT_USER()", "SHOW GRANTS FOR CURRENT_USER", "SHOW GRANTS FOR 'root'@'localhost'",
+                      "SHOW GRANTS FOR CURRENT_USER() USING `r`", "SHOW /* x */ Grants", "SHOW CREATE USER CURRENT_USER()", "show create user root"])
+    func accountDefinitionsAreRefused(sql: String) {
+        let message = ReadOnlySQLGuard.check(sql)
+        #expect(message?.contains("password hashes") == true, "\(sql): \(message ?? "allowed")")
+        #expect(message?.contains("are not available in read-only mode") == true, "\(sql)")
+    }
+
+    // MariaDB's SHOW EXPLAIN / SHOW ANALYZE FOR <id> and EXPLAIN FOR CONNECTION <id> (also MySQL) print another session's
+    // plan with its literals (`attached_condition: … 'card-4111-…'`), bypassing the tools that replace them with `?`.
+    @Test(arguments: ["SHOW EXPLAIN FOR 5", "show explain format=json for 5", "SHOW ANALYZE FOR 5", "SHOW ANALYZE FORMAT=JSON FOR 5",
+                      "EXPLAIN FOR CONNECTION 5", "EXPLAIN FORMAT=JSON FOR CONNECTION 5", "explain format=tree for connection 5",
+                      "EXPLAIN EXTENDED FOR CONNECTION 5", "DESCRIBE FOR CONNECTION 5", "DESC FORMAT=JSON FOR CONNECTION 5",
+                      "EXPLAIN /* x */ FOR /* y */ CONNECTION 5", "SHOW /* x */ EXPLAIN FOR 5"])
+    func otherSessionsPlansAreRefused(sql: String) {
+        let message = ReadOnlySQLGuard.check(sql)
+        #expect(message?.contains("another session's") == true, "\(sql): \(message ?? "allowed")")
+        #expect(message?.contains("are not available in read-only mode") == true, "\(sql)")
+    }
+
+    @Test func analyzeForAConnectionIsRefused() {
+        #expect(ReadOnlySQLGuard.check("ANALYZE FORMAT=JSON FOR CONNECTION 5") != nil)
+        #expect(ReadOnlySQLGuard.check("ANALYZE FOR CONNECTION 5") != nil)
     }
 
     @Test(arguments: [
@@ -292,6 +325,28 @@ struct MySQLMCPToolTests {
         #expect(unknownArgument.payload.stringValue?.contains("catalog") == true)
         let missing = await tools.call(name: "describe_table", arguments: ["database": "shop"])
         #expect(missing.isError)
+    }
+
+    // Final review, item 7: names reach the server as given, while the handshake and identifier quoting cannot carry NUL
+    // (`database: "information_\u{0}schema"` reached MySQL as information_schema). Every argument but the SQL is refused
+    // when it holds a control character, before a connection is opened, for every tool and access level.
+    @Test func controlCharactersInArgumentsAreRefusedBeforeConnecting() async {
+        let opens = OpenCounter()
+        let tools = provider([Self.readOnly, Self.readWrite], opens: opens)
+        let calls: [(String, [String: JSONValue])] = [
+            ("run_query", ["sql": "SELECT ID, INFO FROM processlist", "database": .string("information_\u{0}schema")]),
+            ("run_query", ["sql": "SELECT 1", "database": .string("\u{0}information_schema")]),
+            ("explain_query", ["sql": "SELECT 1", "database": .string("my\u{0}sql")]),
+            ("list_tables", ["database": .string("performance_\u{0}schema")]),
+            ("describe_table", ["database": "shop", "table": .string("t\u{85}")]),
+            ("execute_statement", ["connection": "Dev", "sql": "SELECT 1", "database": .string("shop\u{7F}")]),
+            ("list_tables", ["connection": .string("Prod\u{1}"), "database": "shop"]),
+        ]
+        for (tool, arguments) in calls {
+            let result = await tools.call(name: tool, arguments: arguments)
+            #expect(result.isError && result.payload.stringValue?.contains("control character") == true, "\(tool): \(result.payload)")
+        }
+        #expect(opens.value == 0)
     }
 
     @Test func connectionFailuresAreReportedAsResults() async {

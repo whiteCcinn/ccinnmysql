@@ -105,7 +105,10 @@ struct MCPReadOnlyIntegrationTests {
         defer { process.terminate() }
         _ = try await process.request(["jsonrpc": "2.0", "id": 1, "method": "initialize",
                                        "params": ["protocolVersion": "2025-06-18", "capabilities": [:], "clientInfo": ["name": "it", "version": "1"]]])
-        #expect(ReadOnlySQLGuard.check("SELECT ccinn_it.fn_lock() AS locked") == nil)
+        // A stored function: refused by default (item 9), run here because this connection allows privileged accounts and
+        // stored functions.
+        #expect(ReadOnlySQLGuard.check("SELECT ccinn_it.fn_lock() AS locked") != nil)
+        #expect(ReadOnlySQLGuard.check("SELECT ccinn_it.fn_lock() AS locked", functions: .init(flavor: target.flavor, allowsNonNative: true)) == nil)
         let response = try await process.request(["jsonrpc": "2.0", "id": 2, "method": "tools/call",
                                                   "params": ["name": "run_query", "arguments": ["sql": "SELECT ccinn_it.fn_lock() AS locked"]]])
         #expect(response["result"]?["isError"] != .bool(true), "\(target.label): \(response)")

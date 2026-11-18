@@ -143,6 +143,15 @@ public struct HandshakeResponse41: Sendable {
     public var authPluginName: String?
     public var attributes: [(String, String)] = []
 
+    /// The first field a NUL would end early ("user name", "database name", "authentication plugin name"), `nil` when none
+    /// holds one. The encoder cannot carry NUL in them: callers refuse such a response instead of sending a different name.
+    public var fieldWithNUL: String? {
+        if username.utf8.contains(0) { return "user name" }
+        if database?.utf8.contains(0) == true { return "database name" }
+        if authPluginName?.utf8.contains(0) == true { return "authentication plugin name" }
+        return nil
+    }
+
     public init(capabilities: Capabilities, username: String, authResponse: [UInt8], database: String?, authPluginName: String?,
                 attributes: [(String, String)] = []) {
         self.capabilities = capabilities

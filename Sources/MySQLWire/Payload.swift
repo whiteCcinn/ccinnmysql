@@ -150,6 +150,8 @@ public struct PayloadWriter: Sendable {
 
     public mutating func writeBytes<C: Collection>(_ data: C) where C.Element == UInt8 { bytes.append(contentsOf: data) }
 
+    /// Writes `string` and a terminating NUL. A NUL inside would end the string early on the server, so it is left out; callers
+    /// that send names (the handshake) refuse such a string before encoding instead (`HandshakeResponse41.fieldWithNUL`).
     public mutating func writeNullTerminated(_ string: String) {
         bytes.append(contentsOf: string.utf8.filter { $0 != 0 })
         bytes.append(0)

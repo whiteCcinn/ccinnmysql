@@ -18,9 +18,13 @@ final class SQLFormatting {
         case readOnly
         /// The formatter could not prove the result means the same (a syntax error such as `1.end` included).
         case unsafe
-        /// The text reads differently depending on the session's sql_mode (a backslash in a string, a `"…"` token), and the
-        /// mode has not been read from the server.
+        /// The text reads differently depending on the session's sql_mode or character set (a backslash in a string, a
+        /// `"…"` token, a character outside ASCII), and they have not been read from the server.
         case modeUnknown
+        /// The session's sql_mode has modes the formatter does not model (their names).
+        case unmodelledSQLMode(String)
+        /// The session's character set is not one in which the app's UTF-8 text reads as written.
+        case unsupportedCharset(String)
 
         var message: String {
             switch self {
@@ -29,7 +33,11 @@ final class SQLFormatting {
             case .readOnly: "Not formatted: this editor is read-only."
             case .unsafe: "Not formatted: the result could not be proven to mean the same as this text (check it for errors)."
             case .modeUnknown:
-                "Not formatted: backslashes in strings and double quotes depend on the session's sql_mode, which could not be read yet. Run a statement, then format again."
+                "Not formatted: backslashes in strings, double quotes and characters outside ASCII depend on the session's sql_mode and character set, which could not be read yet. Run a statement, then format again."
+            case let .unmodelledSQLMode(modes):
+                "Not formatted: the session's sql_mode has \(modes), which changes how MySQL reads SQL. Format SQL supports the default reading, NO_BACKSLASH_ESCAPES and ANSI_QUOTES."
+            case let .unsupportedCharset(charset):
+                "Not formatted: the session's character set is \(charset); in it, text written in UTF-8 can read differently. Run SET NAMES utf8mb4 first."
             }
         }
     }
@@ -116,9 +124,7 @@ final class SQLFormatting {
 
     private func apply(_ edit: SQLFormatEdit?, to source: String, cursor: NSRange, formatsSelection: Bool, options: SQLFormatOptions,
                        detached: Detached) {
-        guard let edit else {
-            return show(!options.sessionModeKnown && SQLFormatter.dependsOnLexingMode(source) ? .modeUnknown : .unsafe)
-        }
+        guard let edit else { return show(Self.refusal(of: source, options: options)) }
         let original = (source as NSString).substring(with: edit.range)
         guard !(original as NSString).isEqual(to: edit.replacement) else { return } // already formatted
         let newSelection = formatsSelection
@@ -137,6 +143,14 @@ final class SQLFormatting {
             let result = (source as NSString).replacingCharacters(in: edit.range, with: edit.replacement)
             if !detached.store(source, result, newSelection) { show(.textChanged) }
         }
+    }
+
+    /// Why the formatter returned nothing for `source`.
+    static func refusal(of source: String, options: SQLFormatOptions) -> Notice {
+        if !options.unmodelledSQLModes.isEmpty { return .unmodelledSQLMode(options.unmodelledSQLModes.joined(separator: ", ")) }
+        if !options.sessionCharsetIsSafe, let charset = options.sessionCharset { return .unsupportedCharset(charset) }
+        if !options.sessionModeKnown, SQLFormatter.dependsOnSession(source) { return .modeUnknown }
+        return .unsafe
     }
 
     private func show(_ notice: Notice?) {

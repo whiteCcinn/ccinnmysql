@@ -877,7 +877,7 @@ struct SQLFormatterTests {
         #expect(!SQLFormatter.dependsOnLexingMode("select 'it''s', `a`, b from t -- \"x\\"))
         #expect(SQLLexingMode(sqlMode: "STRICT_TRANS_TABLES,NO_BACKSLASH_ESCAPES") == SQLLexingMode(backslashEscapes: false))
         #expect(SQLLexingMode(sqlMode: "REAL_AS_FLOAT,PIPES_AS_CONCAT,ANSI_QUOTES,IGNORE_SPACE,ONLY_FULL_GROUP_BY,ANSI").ansiQuotes)
-        #expect(SQLLexingMode(sqlMode: "ansi") == SQLLexingMode(ansiQuotes: true))
+        #expect(SQLLexingMode(sqlMode: "ansi") == SQLLexingMode(ansiQuotes: true, unmodelledModes: ["ANSI"]), "ANSI also brings PIPES_AS_CONCAT")
         #expect(SQLLexingMode(sqlMode: "") == .standard)
     }
 
@@ -898,6 +898,44 @@ struct SQLFormatterTests {
             }
         }
         #expect(checked > 2_000)
+    }
+
+    // Final review A: sql_modes that change how SQL is read beyond NO_BACKSLASH_ESCAPES and ANSI_QUOTES (ORACLE, MSSQL,
+    // PIPES_AS_CONCAT, IGNORE_SPACE, …) are not modelled: nothing is formatted while one is active.
+    @Test func unmodelledSQLModesRefuseFormatting() {
+        let oracle = SQLLexingMode(sqlMode: "PIPES_AS_CONCAT,ANSI_QUOTES,IGNORE_SPACE,ORACLE,NO_KEY_OPTIONS,NO_TABLE_OPTIONS,STRICT_TRANS_TABLES")
+        #expect(oracle.unmodelledModes == ["IGNORE_SPACE", "ORACLE", "PIPES_AS_CONCAT"])
+        #expect(oracle.ansiQuotes && oracle.backslashEscapes)
+        var options = SQLFormatOptions()
+        options.lexingMode = oracle
+        #expect(options.unmodelledSQLModes == ["IGNORE_SPACE", "ORACLE", "PIPES_AS_CONCAT"])
+        #expect(format("select a from t", options) == nil)
+        #expect(SQLFormatter.formatSelection(in: "select a from t", range: NSRange(location: 0, length: 6), options: options) == nil)
+        for mode in ["MSSQL", "DB2", "POSTGRESQL", "MAXDB", "ANSI", "HIGH_NOT_PRECEDENCE", "MYSQL40"] {
+            #expect(!SQLLexingMode(sqlMode: "STRICT_TRANS_TABLES,\(mode)").unmodelledModes.isEmpty, "\(mode)")
+        }
+        #expect(SQLLexingMode(sqlMode: "ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION").unmodelledModes.isEmpty)
+        // MCP read-only sessions drop them all.
+        #expect(SQLModes.affectsLexing("STRICT_TRANS_TABLES,ORACLE"))
+        #expect(SQLModes.withoutLexerAffectingModes("PIPES_AS_CONCAT,ANSI_QUOTES,IGNORE_SPACE,ORACLE,NO_KEY_OPTIONS,STRICT_TRANS_TABLES")
+            == "NO_KEY_OPTIONS,STRICT_TRANS_TABLES")
+    }
+
+    // Final review B: the app always sends UTF-8 and every connection is switched to utf8mb4; a session in another
+    // character set (GBK, Shift-JIS: 0x5C can be the second byte of a character) reads the text differently, so nothing is
+    // formatted. With the session state unknown, text that a character set or sql_mode could read differently (anything
+    // outside ASCII, a backslash in a string, a double quote) is not formatted either.
+    @Test func sessionCharsetsOtherThanUTF8RefuseFormatting() {
+        for charset in ["utf8mb4", "UTF8MB3", "utf8", "ascii", "latin1"] {
+            #expect(format("select a from t", SQLFormatOptions(sessionCharset: charset)) == "SELECT a\nFROM t", "\(charset)")
+        }
+        for charset in ["gbk", "sjis", "big5", "cp932", "gb18030", "utf16"] {
+            #expect(format("select a from t", SQLFormatOptions(sessionCharset: charset)) == nil, "\(charset)")
+        }
+        let unknown = SQLFormatOptions(sessionModeKnown: false)
+        #expect(format("select '中' from t", unknown) == nil)
+        #expect(format("select `名` from t", unknown) == nil)
+        #expect(format("select a from t -- 中", unknown) == "SELECT a\nFROM t -- 中")
     }
 
     // Review #6: only a real client DELIMITER command (start of a statement and a line, then its delimiter) makes a

@@ -130,6 +130,16 @@ struct HandshakeTests {
         #expect(AuthPlugin.clearPassword(password: "pw") == [0x70, 0x77, 0])
     }
 
+    @Test func handshakeFieldsThatCannotCarryNULAreNamed() {
+        func response(_ user: String, _ database: String?, _ plugin: String?) -> HandshakeResponse41 {
+            HandshakeResponse41(capabilities: [.protocol41], username: user, authResponse: [], database: database, authPluginName: plugin)
+        }
+        #expect(response("root", "shop", "mysql_native_password").fieldWithNUL == nil)
+        #expect(response("ro\u{0}ot", "shop", nil).fieldWithNUL == "user name")
+        #expect(response("root", "sh\u{0}op", nil).fieldWithNUL == "database name")
+        #expect(response("root", nil, "mysql_native\u{0}password").fieldWithNUL == "authentication plugin name")
+    }
+
     @Test func handshakeResponseLayout() throws {
         let response = HandshakeResponse41(capabilities: [.protocol41, .secureConnection, .pluginAuth, .connectWithDB, .pluginAuthLenencData],
                                            username: "root", authResponse: [1, 2, 3], database: "shop",

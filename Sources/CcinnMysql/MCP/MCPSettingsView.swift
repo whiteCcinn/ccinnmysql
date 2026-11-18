@@ -1,10 +1,14 @@
 import CcinnMysqlKit
+import MySQLKit
 import SwiftUI
 
 /// Settings → MCP: which connections AI clients may use, and how to register the server.
 struct MCPSettingsView: View {
     let store: ProfileStore
     @State private var copied: String?
+    /// Results of "Check account" per connection.
+    @State private var reports: [UUID: String] = [:]
+    @State private var checking: Set<UUID> = []
 
     private var command: String { MCPCommand.executablePath }
 
@@ -15,6 +19,27 @@ struct MCPSettingsView: View {
             ("Codex (~/.codex/config.toml)", "[mcp_servers.ccinnmysql]\ncommand = \"\(quoted)\"\nargs = [\"mcp\"]"),
             ("Claude Desktop / JSON", "{\n  \"mcpServers\": {\n    \"ccinnmysql\": {\n      \"command\": \"\(quoted)\",\n      \"args\": [\"mcp\"]\n    }\n  }\n}"),
         ]
+    }
+
+    /// Connects with the profile and fills `reports` with what read-only AI access means for its account.
+    private func check(_ profile: ConnectionProfile) {
+        checking.insert(profile.id)
+        let password = store.password(for: profile) ?? ""
+        let sshSecret = store.sshSecret(for: profile)
+        let passphrase = store.repository.clientCertificatePassphrase(for: profile)
+        Task {
+            let text: String
+            do {
+                let client = try await ClientOpener.open(profile: profile, password: password, sshSecret: sshSecret,
+                                                         clientCertificatePassphrase: passphrase, poolSize: 1)
+                defer { Task { await client.close() } }
+                text = try await AIAccessReport.load(client: client).summary(allowsPrivilegedAccount: profile.aiAllowsPrivilegedAccount)
+            } catch {
+                text = "Could not check this account: \((error as? MySQLError)?.message ?? error.localizedDescription)"
+            }
+            reports[profile.id] = text
+            checking.remove(profile.id)
+        }
     }
 
     var body: some View {
@@ -40,11 +65,28 @@ struct MCPSettingsView: View {
                             }
                         }
                     }
+                    if profile.mcpAccess == .readOnly {
+                        Toggle(isOn: Binding(get: { profile.aiAllowsPrivilegedAccount },
+                                             set: { store.setAIAllowsPrivilegedAccount($0, for: profile) })) {
+                            Text("Allow read-only AI access with a privileged account, and stored functions")
+                        }
+                        .padding(.leading, 17)
+                        .help("Off: read-only AI tools refuse an account with FILE, SUPER, PROCESS, any dynamic privilege not reviewed as harmless (every *_ADMIN, INNODB_REDO_LOG_ARCHIVE, …), global ALL PRIVILEGES, or SELECT on *.*, mysql.*, performance_schema.* or sys.* (also through a matching database pattern such as % and through roles), and call only reviewed built-in functions. On: the AI may also call stored, loadable and component functions, whose insides can't be checked, and with PROCESS it can see other sessions' statements through existing views or routines over the process list.")
+                        HStack(alignment: .firstTextBaseline) {
+                            Button(checking.contains(profile.id) ? "Checking…" : "Check account") { check(profile) }
+                                .disabled(checking.contains(profile.id))
+                                .help("Connects with this account and reports whether read-only AI tools accept it, and which definer-rights routines and views run with a privileged account's rights.")
+                            if let report = reports[profile.id] {
+                                Text(report).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                            }
+                        }
+                        .padding(.leading, 17)
+                    }
                 }
                 Text("Read-only allows metadata and diagnostics tools and SELECT / SHOW / DESCRIBE / EXPLAIN inside read-only transactions, at most 1,000 rows per call. Read & write adds a tool that runs any statement. Every call is logged to mcp-audit.jsonl in the app's data folder.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Label("Read-only means no data or schema changes; side effects inside existing stored functions (GET_LOCK, SLEEP, …) can't be inspected. For real isolation, use a dedicated MySQL user with SELECT only (plus PROCESS / SHOW VIEW / performance_schema SELECT for the diagnostics tools).", systemImage: "person.badge.shield.checkmark")
+                Label("Read-only means no data or schema changes, but what an existing stored function or view does can't be inspected. With an account that has FILE, SUPER, PROCESS, an unreviewed dynamic privilege (*_ADMIN, INNODB_REDO_LOG_ARCHIVE, …), global ALL PRIVILEGES, or SELECT on *.*, mysql.*, performance_schema.* or sys.* (as local root has), such a function or view could write or read server files or read password hashes and other sessions' statements, so read-only AI tools refuse these accounts unless you allow it above. Use a dedicated MySQL user with SELECT (and SHOW VIEW) on the schemas the AI may read; the process list and InnoDB status tools need PROCESS, which needs the allowance above.", systemImage: "person.badge.shield.checkmark")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

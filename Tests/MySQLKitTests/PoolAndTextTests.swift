@@ -90,6 +90,15 @@ struct TextHelperTests {
         #expect(SQLText.literal("a\nb\0") == "'a\\nb\\0'")
     }
 
+    // Final review, item 7: quoting drops NUL, so `USE` of a name holding one would switch to a different database.
+    @Test func useStatementsRefuseNamesWithNUL() throws {
+        #expect(try SQLText.useStatement("a`b") == "USE `a``b`")
+        for name in ["information_\u{0}schema", "shop\u{0}", "\u{0}"] {
+            let error = #expect(throws: MySQLError.self) { try SQLText.useStatement(name) }
+            #expect(error?.kind == .invalidArgument, "\(name.debugDescription)")
+        }
+    }
+
     @Test func recognisesContextChanges() {
         #expect(SessionContextChange.parse("use shop;") == .use(database: "shop"))
         #expect(SessionContextChange.parse("USE `my db`") == .use(database: "my db"))

@@ -251,6 +251,22 @@ struct SQLEditorTests {
         #expect(other.notice == nil)
     }
 
+    // Final review A/B: an unmodelled sql_mode or a session character set other than UTF-8/latin1/ASCII refuses with a
+    // notice that names it.
+    @Test func unsupportedSessionsSayWhy() async throws {
+        let harness = EditorHarness("select a, b from t")
+        let formatting = formatting(harness)
+        var options = SQLFormatOptions()
+        options.lexingMode = SQLLexingMode(sqlMode: "ORACLE,PIPES_AS_CONCAT")
+        await formatting.start(options: options, detached: detached(""))?.value
+        #expect(formatting.notice == .unmodelledSQLMode("ORACLE, PIPES_AS_CONCAT"))
+        #expect(formatting.notice?.message.contains("ORACLE") == true)
+        await formatting.start(options: SQLFormatOptions(sessionCharset: "gbk"), detached: detached(""))?.value
+        #expect(formatting.notice == .unsupportedCharset("gbk"))
+        #expect(formatting.notice?.message.contains("gbk") == true)
+        #expect(harness.textView.string == "select a, b from t")
+    }
+
     // Review #4/#5: Run, Run All and EXPLAIN split the script as the session does. Under NO_BACKSLASH_ESCAPES `'C:\'` ends
     // at its second quote; under ANSI_QUOTES `"a\"` is a name.
     @Test func runPathsSplitAsTheSessionDoes() {

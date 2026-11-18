@@ -7,6 +7,14 @@ public enum SQLText {
         "`" + name.replacingOccurrences(of: "\0", with: "").replacingOccurrences(of: "`", with: "``") + "`"
     }
 
+    /// `USE` of `database`, refusing a name that holds NUL: quoting drops it, so USE would switch to a different database.
+    public static func useStatement(_ database: String) throws -> String {
+        guard !database.unicodeScalars.contains("\0") else {
+            throw MySQLError(.invalidArgument, "The database name contains a NUL character, so USE would switch to a different database.")
+        }
+        return "USE " + quoteIdentifier(database)
+    }
+
     /// `a`.`b`.`c` from the non-empty parts.
     public static func qualified(_ parts: String?...) -> String {
         parts.compactMap { $0 }.filter { !$0.isEmpty }.map(quoteIdentifier).joined(separator: ".")

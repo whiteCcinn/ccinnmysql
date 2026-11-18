@@ -288,6 +288,26 @@ struct FormatterIntegrationTests {
         }
     }
 
+    // Final review, item 4: `SET CHARACTER SET gbk` switches the session's client character set; the editor notices any
+    // SET, reads the character set again, and Format SQL refuses the session.
+    @Test(arguments: IntegrationEnvironment.targets)
+    func characterSetChangesAreReadAgain(target: IntegrationEnvironment.Target) async throws {
+        let client = try await client(target)
+        defer { Task { await client.close() } }
+        let session = client.openSession(database: "shop")
+        defer { Task { await session.close() } }
+        for statement in ["SET CHARACTER SET gbk", "SET CHARSET sjis", "SET NAMES gbk"] {
+            _ = try await session.run("SET NAMES utf8mb4")
+            #expect(SQLLexingMode.mayBeChanged(by: statement, readAs: .standard), "\(statement)")
+            _ = try await session.run(statement)
+            let charset = try await session.run("SELECT @@SESSION.character_set_client AS c").last?.scalar
+            #expect(charset == "gbk" || charset == "sjis", "\(target.label) \(statement): \(charset ?? "nil")")
+            let options = SQLFormatOptions(sessionCharset: charset)
+            #expect(!options.sessionCharsetIsSafe && SQLFormatter.format("select  1", options: options) == nil, "\(target.label) \(statement)")
+        }
+        _ = try await session.run("SET NAMES utf8mb4")
+    }
+
     // `'user'@'host'` stays glued (GRANT, CREATE USER, DEFINER=), and the formatted statements manage the same account.
     @Test(arguments: IntegrationEnvironment.targets)
     func accountNamesStayGlued(target: IntegrationEnvironment.Target) async throws {

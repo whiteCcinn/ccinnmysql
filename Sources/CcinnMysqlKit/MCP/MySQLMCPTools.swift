@@ -43,6 +43,8 @@ public struct MySQLMCPTools: MCPToolProvider {
     public let resolver: MCPProfileResolver
     public let registry: MCPClientRegistry
     public let audit: MCPAuditLog?
+    /// Definer-rights objects each connection's account can reach, for the notice of read-only query results.
+    private let definerRights = DefinerRightsCache()
 
     public static let defaultRowLimit = 200
     public static let maxRowLimit = 1_000
@@ -193,15 +195,30 @@ public struct MySQLMCPTools: MCPToolProvider {
     }
 
     private func dispatch(_ name: String, _ args: Arguments, _ context: CallContext) async throws -> JSONValue {
+        if let key = args.controlCharacterArgument() {
+            throw MCPToolError("`\(key)` contains a control character. Names are sent to the server as given, so they must be plain text.")
+        }
         if name == "list_connections" { return listConnections() }
         let resolved = try resolver.resolve(args.string("connection"))
         context.connection = resolved.profile.displayName
         // Statements are checked before any connection is opened: rejected SQL never reaches the server.
-        try precheck(name, args, access: resolved.access, context: context)
+        try precheck(name, args, access: resolved.access, functions: ReadOnlySQLGuard.FunctionPolicy(allowsNonNative: resolved.profile.aiAllowsPrivilegedAccount),
+                     context: context)
         let client = try await registry.client(for: resolved.profile)
+        // Read-only access with an account that can reach files, server state or secrets through functions is refused
+        // unless the connection allows it; run_query and explain_query check inside their own session, before the statement.
+        let checksPrivileges = resolved.access == .readOnly && !resolved.profile.aiAllowsPrivilegedAccount
+        if checksPrivileges, !["run_query", "explain_query"].contains(name) {
+            try await Self.requireUnprivileged(flavor: client.serverInfo.flavor) { try await client.query($0) }
+        }
         switch name {
         case "server_info":
-            return try await serverInfo(client)
+            var info = try await serverInfo(client)
+            if case var .object(fields) = info, let objects = try? await DefinerRights.load(run: { try await client.query($0) }) {
+                fields["definer_rights"] = .array(objects.map { .string($0.label) })
+                info = .object(fields)
+            }
+            return info
         case "list_databases":
             let schemas = try await client.schemas()
             return ["databases": .array(schemas.map { ["name": .string($0.name), "character_set": JSONValue($0.characterSet), "system": .bool($0.isSystem)] })]
@@ -230,9 +247,13 @@ public struct MySQLMCPTools: MCPToolProvider {
         case "get_replication_status":
             return Self.encode(replication: try await client.replicationOverview(), info: client.serverInfo)
         case "run_query":
-            return try await runQuery(client, args, context, access: resolved.access)
+            let functions = ReadOnlySQLGuard.FunctionPolicy(flavor: client.serverInfo.flavor, allowsNonNative: resolved.profile.aiAllowsPrivilegedAccount)
+            let result = try await runQuery(client, args, context, access: resolved.access, checksPrivileges: checksPrivileges, functions: functions)
+            return await withDefinerNotice(result, profile: resolved.profile, access: resolved.access, client: client)
         case "explain_query":
-            return try await explain(client, args, context)
+            let functions = ReadOnlySQLGuard.FunctionPolicy(flavor: client.serverInfo.flavor, allowsNonNative: resolved.profile.aiAllowsPrivilegedAccount)
+            let result = try await explain(client, args, context, checksPrivileges: checksPrivileges, functions: functions)
+            return await withDefinerNotice(result, profile: resolved.profile, access: resolved.access, client: client)
         case "execute_statement":
             guard resolved.access == .readWrite else {
                 throw MCPToolError("Connection “\(resolved.profile.displayName)” only allows read-only AI access; use run_query, or change its AI access to Read & write in CcinnMysql.")
@@ -243,25 +264,24 @@ public struct MySQLMCPTools: MCPToolProvider {
         }
     }
 
-    private func precheck(_ name: String, _ args: Arguments, access: MCPAccess, context: CallContext) throws {
+    private func precheck(_ name: String, _ args: Arguments, access: MCPAccess, functions: ReadOnlySQLGuard.FunctionPolicy,
+                          context: CallContext) throws {
         switch name {
         case "run_query":
             let sql = try args.required("sql")
             context.statement = sql
-            if let reason = ReadOnlySQLGuard.check(sql) {
+            if let reason = ReadOnlySQLGuard.check(sql, defaultDatabase: args.string("database"), functions: functions) {
                 throw MCPToolError(reason + (access == .readWrite ? " Use execute_statement for statements that change data." : ""))
             }
         case "explain_query":
             let sql = try args.required("sql")
             context.statement = sql
-            if let reason = ReadOnlySQLGuard.check(sql) { throw MCPToolError(reason) }
+            if let reason = ReadOnlySQLGuard.check(sql, defaultDatabase: args.string("database"), functions: functions) { throw MCPToolError(reason) }
         case "execute_statement":
             guard access == .readWrite else {
                 throw MCPToolError("This connection only allows read-only AI access; use run_query, or change its AI access to Read & write in CcinnMysql.")
             }
-            let sql = try args.required("sql")
-            context.statement = sql
-            guard SQLStatementSplitter.split(sql).count == 1 else { throw MCPToolError("Pass exactly one statement per call.") }
+            context.statement = try args.required("sql") // split in its session, with the session's sql_mode
         default:
             break
         }
@@ -381,7 +401,7 @@ public struct MySQLMCPTools: MCPToolProvider {
             "sessions": .array(sessions.prefix(500).map { process in
                 ["id": .string(String(process.id)), "user": JSONValue(process.user), "host": JSONValue(process.host), "database": JSONValue(process.database),
                  "command": JSONValue(process.command), "seconds": JSONValue(process.timeSeconds), "state": JSONValue(process.state),
-                 "statement": JSONValue(process.statement.map { SQLRedactor.redact(String($0.prefix(2_000))) })]
+                 "statement": JSONValue(process.statement.map { SQLRedactor.redactLiterals(String($0.prefix(2_000))) })]
             }),
             "count": .int(Int64(sessions.count)),
         ]
@@ -389,9 +409,11 @@ public struct MySQLMCPTools: MCPToolProvider {
 
     // MARK: SQL tools
 
-    private func runQuery(_ client: MySQLClient, _ args: Arguments, _ context: CallContext, access: MCPAccess) async throws -> JSONValue {
+    private func runQuery(_ client: MySQLClient, _ args: Arguments, _ context: CallContext, access: MCPAccess,
+                          checksPrivileges: Bool, functions: ReadOnlySQLGuard.FunctionPolicy) async throws -> JSONValue {
         let sql = try args.required("sql")
-        if let reason = ReadOnlySQLGuard.check(sql) {
+        let database = args.string("database")
+        if let reason = ReadOnlySQLGuard.check(sql, defaultDatabase: database, functions: functions) {
             let hint = access == .readWrite ? " Use execute_statement for statements that change data." : ""
             throw MCPToolError(reason + hint)
         }
@@ -404,9 +426,13 @@ public struct MySQLMCPTools: MCPToolProvider {
             executed = outcome.sql
             limitApplied = outcome.applied
         }
+        // The guard judges the exact text that is sent (after the automatic LIMIT), not only the request.
+        if let reason = ReadOnlySQLGuard.check(executed, defaultDatabase: database, functions: functions) { throw MCPToolError(reason) }
         context.statement = executed
         let started = ContinuousClock.now
-        let results = try await runInSession(client, sql: executed, args: args, readOnly: true, limits: RowLimits(maxRows: limit, drainRows: 10_000))
+        let sent = executed
+        let results = try await runInSession(client, args: args, readOnly: true, checksPrivileges: checksPrivileges,
+                                             limits: RowLimits(maxRows: limit, drainRows: 10_000)) { _ in sent }.results
         let elapsed = ContinuousClock.now - started
         var payload = Self.encode(results: results, limitRows: limit)
         context.rows = payload["row_count"]?.intValue.map { Int(clamping: $0) }
@@ -417,14 +443,16 @@ public struct MySQLMCPTools: MCPToolProvider {
         return .object(payload)
     }
 
-    private func explain(_ client: MySQLClient, _ args: Arguments, _ context: CallContext) async throws -> JSONValue {
+    private func explain(_ client: MySQLClient, _ args: Arguments, _ context: CallContext, checksPrivileges: Bool,
+                         functions: ReadOnlySQLGuard.FunctionPolicy) async throws -> JSONValue {
         let sql = try args.required("sql")
         let statements = SQLStatementSplitter.split(sql)
         guard statements.count == 1, let statement = statements.first?.text else { throw MCPToolError("Pass exactly one SELECT query.") }
         guard ["SELECT", "WITH", "("].contains(SQLLexer.tokenize(statement).first.map { SQLLexer(statement).text(of: $0).uppercased() } ?? "") else {
             throw MCPToolError("explain_query accepts a SELECT or WITH query.")
         }
-        if let reason = ReadOnlySQLGuard.check(statement) { throw MCPToolError(reason) }
+        let database = args.string("database")
+        if let reason = ReadOnlySQLGuard.check(statement, defaultDatabase: database, functions: functions) { throw MCPToolError(reason) }
         let info = client.serverInfo
         let analyze = args.bool("analyze") ?? false
         let body: String
@@ -441,9 +469,10 @@ public struct MySQLMCPTools: MCPToolProvider {
         } else {
             body = "EXPLAIN " + statement
         }
-        if let reason = ReadOnlySQLGuard.check(body) { throw MCPToolError(reason) }
+        if let reason = ReadOnlySQLGuard.check(body, defaultDatabase: database, functions: functions) { throw MCPToolError(reason) }
         context.statement = body
-        let results = try await runInSession(client, sql: body, args: args, readOnly: true, limits: RowLimits(maxRows: 10_000, maxBytes: 16 * 1024 * 1024))
+        let results = try await runInSession(client, args: args, readOnly: true, checksPrivileges: checksPrivileges,
+                                             limits: RowLimits(maxRows: 10_000, maxBytes: 16 * 1024 * 1024)) { _ in body }.results
         guard let rows = results.last(where: \.hasRowSet) else { throw MCPToolError("The server returned no plan.") }
         let text = rows.rows.compactMap { $0.first ?? nil }.joined(separator: "\n")
         var payload: [String: JSONValue] = ["statement": .string(body)]
@@ -462,12 +491,14 @@ public struct MySQLMCPTools: MCPToolProvider {
 
     private func execute(_ client: MySQLClient, _ args: Arguments, _ context: CallContext) async throws -> JSONValue {
         let sql = try args.required("sql")
-        let statements = SQLStatementSplitter.split(sql)
-        guard statements.count == 1, let statement = statements.first?.text else {
-            throw MCPToolError("Pass exactly one statement per call.")
+        // Split as the session splits: its sql_mode decides where strings end, and so where `;` is.
+        let (results, statement) = try await runInSession(client, args: args, readOnly: false, checksPrivileges: false,
+                                                          limits: RowLimits(maxRows: Self.maxRowLimit, drainRows: 10_000)) { mode in
+            let statements = SQLStatementSplitter.split(sql, mode: mode)
+            guard statements.count == 1, let statement = statements.first?.text else { throw MCPToolError("Pass exactly one statement per call.") }
+            return statement
         }
         context.statement = statement
-        let results = try await runInSession(client, sql: statement, args: args, readOnly: false, limits: RowLimits(maxRows: Self.maxRowLimit, drainRows: 10_000))
         var payload = Self.encode(results: results, limitRows: Self.maxRowLimit)
         payload["statement"] = .string(statement)
         context.rows = payload["row_count"]?.intValue.map { Int(clamping: $0) }
@@ -477,7 +508,12 @@ public struct MySQLMCPTools: MCPToolProvider {
     /// Runs on a short-lived session in the requested database, bounded by a deadline (plus a server-side time limit).
     /// Read-only calls run inside `START TRANSACTION READ ONLY` and are rolled back (design D10). Cancelling the calling
     /// task (client cancellation or timeout) kills the statement on the server.
-    private func runInSession(_ client: MySQLClient, sql: String, args: Arguments, readOnly: Bool, limits: RowLimits) async throws -> [ResultSet] {
+    /// `statement` gives the text to run once the session's lexing mode is known (read-only calls: the default mode, which
+    /// they enforce; read-write calls: the session's own). Read-only calls also verify, in the same session and right
+    /// before the statement, that it reads SQL as the guard did (no lexer-affecting sql_mode, utf8mb4) and, with
+    /// `checksPrivileges`, that the account is not privileged (`AccountPrivileges`); any failure refuses the call.
+    private func runInSession(_ client: MySQLClient, args: Arguments, readOnly: Bool, checksPrivileges: Bool, limits: RowLimits,
+                              statement: @escaping @Sendable (SQLLexingMode) throws -> String) async throws -> (results: [ResultSet], sql: String) {
         let timeout = min(max(args.double("timeout_seconds") ?? Self.defaultTimeout, 1), Self.maxTimeout)
         let session = client.openSession(database: args.string("database"))
         let info = client.serverInfo
@@ -490,22 +526,33 @@ public struct MySQLMCPTools: MCPToolProvider {
                 } else if info.supportsMaxStatementTime {
                     _ = try await session.run("SET SESSION max_statement_time = \(Int(timeout))")
                 }
+                let sessionMode = try await session.run("SELECT @@SESSION.sql_mode AS m").last?.scalar ?? ""
+                let mode: SQLLexingMode
                 if readOnly {
-                    // The guard tokenized the statement assuming backslash escapes and '"' strings; make the server agree.
-                    let mode = try await session.run("SELECT @@SESSION.sql_mode AS m").last?.scalar ?? ""
-                    if SQLModes.affectsLexing(mode) {
-                        _ = try await session.run("SET SESSION sql_mode = \(SQLText.literal(SQLModes.withoutLexerAffectingModes(mode)))")
+                    // The guard tokenized the statement in the default mode (backslash escapes, '"' strings) and only the
+                    // grammar it knows (no ORACLE, PIPES_AS_CONCAT, …); make the server agree, or refuse.
+                    if SQLModes.affectsLexing(sessionMode) {
+                        _ = try await session.run("SET SESSION sql_mode = \(SQLText.literal(SQLModes.withoutLexerAffectingModes(sessionMode)))")
                         let after = try await session.run("SELECT @@SESSION.sql_mode AS m").last?.scalar ?? ""
                         guard !SQLModes.affectsLexing(after) else {
                             throw MCPToolError("The session sql_mode (\(after)) changes how SQL is tokenized; read-only calls are refused.")
                         }
                     }
+                    try await Self.requireUTF8MB4(session)
+                    if checksPrivileges { try await Self.requireUnprivileged(flavor: info.flavor) { try await session.run($0) } }
+                    mode = .standard
+                } else {
+                    mode = SQLLexingMode(sqlMode: sessionMode)
+                    guard mode.unmodelledModes.isEmpty else {
+                        throw MCPToolError("The session sql_mode has \(mode.unmodelledModes.joined(separator: ", ")), which changes how SQL is split into statements; execute_statement is refused.")
+                    }
                 }
+                let sql = try statement(mode)
                 let transactional = readOnly && info.supportsReadOnlyTransactions
                 if transactional { _ = try await session.run("START TRANSACTION READ ONLY") }
                 let results = try await session.run(sql, limits: limits)
                 if transactional { _ = try? await session.run("ROLLBACK") }
-                return results
+                return (results, sql)
             }
             await session.close()
             return results
@@ -514,6 +561,40 @@ public struct MySQLMCPTools: MCPToolProvider {
             await session.close()
             throw error
         }
+    }
+
+    /// The session reads the UTF-8 the app sends as UTF-8. Every connection is switched to utf8mb4 after the handshake;
+    /// this re-checks it right before a guarded statement (a server can switch connections to GBK or Shift-JIS, where
+    /// 0x5C can be part of a character and a string ends somewhere else than the guard saw).
+    static func requireUTF8MB4(_ session: SQLSession) async throws {
+        let row = try await session.run("SELECT @@character_set_client, @@character_set_connection, @@character_set_results").last?.rows.first ?? []
+        let charsets = row.map { $0?.lowercased() ?? "NULL" }
+        guard charsets.count == 3, charsets.allSatisfy({ $0 == "utf8mb4" }) else {
+            throw MCPToolError("The session's character set is \(charsets.joined(separator: " / ")), not utf8mb4; the server could read the statement differently from the read-only check, so read-only calls are refused.")
+        }
+    }
+
+    /// Read-only results carry a notice when the account can reach definer-rights routines or views of a privileged (or
+    /// unverifiable) definer: the read-only check cannot see inside them, an accepted and reported risk.
+    private func withDefinerNotice(_ result: JSONValue, profile: ConnectionProfile, access: MCPAccess, client: MySQLClient) async -> JSONValue {
+        guard access == .readOnly, case var .object(fields) = result,
+              let objects = await definerRights.objects(for: profile.id, load: { try await DefinerRights.load(run: { try await client.query($0) }) }),
+              let notice = DefinerRights.notice(for: objects) else { return result }
+        fields["notice"] = .string(notice)
+        return .object(fields)
+    }
+
+    /// Refuses a privileged account (`AccountPrivileges`); fails closed when its privileges cannot be read.
+    static func requireUnprivileged(flavor: ServerFlavor, run: @Sendable (String) async throws -> [ResultSet]) async throws {
+        let privileges: AccountPrivileges
+        do {
+            privileges = try await AccountPrivileges.load(flavor: flavor, run: run)
+        } catch let nested as AccountPrivileges.NestedRoleError {
+            throw MCPToolError(nested.message)
+        } catch {
+            throw MCPToolError("Could not check this account's privileges (\((error as? MySQLError)?.message ?? error.localizedDescription)), so read-only AI calls are refused. Allow privileged accounts for this connection in CcinnMysql's AI settings to skip the check.")
+        }
+        if privileges.isPrivileged { throw MCPToolError(privileges.refusal) }
     }
 
     // MARK: Encoding
@@ -568,22 +649,24 @@ public struct MySQLMCPTools: MCPToolProvider {
             "transactions": .array(activity.transactions.prefix(200).map { trx in
                 ["id": .string(trx.id), "state": .string(trx.state), "age_seconds": JSONValue(trx.ageSeconds), "thread_id": JSONValue(trx.threadID.map { String($0) }),
                  "rows_locked": JSONValue(trx.rowsLocked), "rows_modified": JSONValue(trx.rowsModified), "isolation": JSONValue(trx.isolationLevel),
-                 "query": JSONValue(trx.query.map { SQLRedactor.redact(String($0.prefix(2_000))) })]
+                 "query": JSONValue(trx.query.map { SQLRedactor.redactLiterals(String($0.prefix(2_000))) })]
             }),
             "lock_waits": .array(activity.lockWaits.prefix(200).map { wait in
-                ["waiting_thread": JSONValue(wait.waitingThread.map { String($0) }), "waiting_query": JSONValue(wait.waitingQuery.map { SQLRedactor.redact(String($0.prefix(2_000))) }),
+                ["waiting_thread": JSONValue(wait.waitingThread.map { String($0) }),
+                 "waiting_query": JSONValue(wait.waitingQuery.map { SQLRedactor.redactLiterals(String($0.prefix(2_000))) }),
                  "wait_seconds": JSONValue(wait.waitSeconds), "blocking_thread": JSONValue(wait.blockingThread.map { String($0) }),
-                 "blocking_query": JSONValue(wait.blockingQuery.map { SQLRedactor.redact(String($0.prefix(2_000))) }),
+                 "blocking_query": JSONValue(wait.blockingQuery.map { SQLRedactor.redactLiterals(String($0.prefix(2_000))) }),
                  "lock_mode": JSONValue(wait.lockMode), "lock_type": JSONValue(wait.lockType), "table": JSONValue(wait.lockedTable),
-                 "index": JSONValue(wait.lockedIndex), "lock_data": JSONValue(wait.lockData)]
+                 // The locked row's key values.
+                 "index": JSONValue(wait.lockedIndex), "lock_data": JSONValue(wait.lockData.map { SQLRedactor.redactLiterals(String($0.prefix(2_000))) })]
             }),
-            "latest_deadlock": JSONValue(activity.latestDeadlock.map { SQLRedactor.redact(String($0.prefix(16_000))) }),
+            "latest_deadlock": JSONValue(activity.latestDeadlock.map { SQLRedactor.redactInnoDBStatus(String($0.prefix(16_000))) }),
             "unavailable": .object(activity.unavailable.mapValues(JSONValue.string)),
         ]
     }
 
     static func encode(digest: StatementDigest) -> JSONValue {
-        ["schema": JSONValue(digest.schema), "digest_text": .string(SQLRedactor.redact(String(digest.text.prefix(4_000)))),
+        ["schema": JSONValue(digest.schema), "digest_text": .string(SQLRedactor.redactLiterals(String(digest.text.prefix(4_000)))),
          "executions": .int(digest.executions), "total_seconds": .double((digest.totalSeconds * 1000).rounded() / 1000),
          "avg_ms": .double((digest.averageSeconds * 1_000_000).rounded() / 1000), "max_ms": .double((digest.maxSeconds * 1_000_000).rounded() / 1000),
          "rows_examined": .int(digest.rowsExamined), "rows_sent": .int(digest.rowsSent), "rows_affected": .int(digest.rowsAffected),
@@ -591,16 +674,21 @@ public struct MySQLMCPTools: MCPToolProvider {
          "last_seen": JSONValue(digest.lastSeen)]
     }
 
+    /// One replication channel. The last SQL error quotes the replicated statement and duplicate values without escaping
+    /// them (`Error 'Duplicate entry 'x' …' … Query: 'INSERT … ('x')'`): everything between its first and last quote is `?`.
+    static func encode(channel: ReplicaChannel) -> JSONValue {
+        ["name": .string(channel.name), "source": JSONValue(channel.sourceHost.map { "\($0):\(channel.sourcePort ?? 3306)" }),
+         "io_running": JSONValue(channel.ioRunning), "sql_running": JSONValue(channel.sqlRunning),
+         "seconds_behind_source": JSONValue(channel.secondsBehind), "last_io_error": JSONValue(channel.lastIOError),
+         "last_sql_error": JSONValue(channel.lastSQLError.map { SQLRedactor.redactQuoted(String($0.prefix(4_000))) }),
+         "retrieved_gtid_set": JSONValue(channel.retrievedGTIDSet), "executed_gtid_set": JSONValue(channel.executedGTIDSet),
+         "state": JSONValue(channel.sqlState)]
+    }
+
     static func encode(replication: ReplicationOverview, info: ServerInfo) -> JSONValue {
         [
             "role": .string(replication.role.rawValue),
-            "channels": .array(replication.channels.map { channel in
-                ["name": .string(channel.name), "source": JSONValue(channel.sourceHost.map { "\($0):\(channel.sourcePort ?? 3306)" }),
-                 "io_running": JSONValue(channel.ioRunning), "sql_running": JSONValue(channel.sqlRunning),
-                 "seconds_behind_source": JSONValue(channel.secondsBehind), "last_io_error": JSONValue(channel.lastIOError),
-                 "last_sql_error": JSONValue(channel.lastSQLError), "retrieved_gtid_set": JSONValue(channel.retrievedGTIDSet),
-                 "executed_gtid_set": JSONValue(channel.executedGTIDSet), "state": JSONValue(channel.sqlState)]
-            }),
+            "channels": .array(replication.channels.map(encode(channel:))),
             "binlog_file": JSONValue(replication.binlogFile), "binlog_position": JSONValue(replication.binlogPosition),
             "gtid_mode": JSONValue(replication.gtidMode), "executed_gtid_set": JSONValue(replication.executedGTIDSet),
             "connected_replicas": .array(replication.connectedReplicas.prefix(100).map { .object($0.mapValues(JSONValue.string)) }),
@@ -665,6 +753,16 @@ struct Arguments: Sendable {
         }
         guard let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
         return trimmed
+    }
+
+    /// The first argument other than `sql` whose text holds a control character (Unicode Cc: NUL, C0, DEL, C1). Names reach
+    /// the server as given, while the handshake and identifier quoting cannot carry NUL, so such a name could arrive as a
+    /// different one than was checked.
+    func controlCharacterArgument() -> String? {
+        values.keys.sorted().first { key in
+            guard key != "sql", case let .string(text) = values[key] else { return false }
+            return text.unicodeScalars.contains { $0.properties.generalCategory == .control }
+        }
     }
 
     func required(_ key: String) throws -> String {

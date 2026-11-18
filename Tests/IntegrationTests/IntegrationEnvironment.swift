@@ -52,6 +52,31 @@ enum IntegrationEnvironment {
                                 tls: TLSOptions(mode: tls, serverName: "127.0.0.1"))
     }
 
+    /// Objects the integration tests create carry the `ccinn_` prefix (users, roles, routines, views); every test awaits its
+    /// own cleanup, also after a failure. A crashed run can still leave some behind, so the first test on a server that
+    /// creates such objects drops what earlier runs left (once per process; the suites run one server at a time, serialized).
+    static func sweepLeftovers(_ admin: MySQLClient, target: Target) async {
+        guard await LeftoverSweeps.shared.claim(target.port) else { return }
+        func rows(_ sql: String) async -> [[String?]] { (try? await admin.query(sql).flatMap(\.rows)) ?? [] }
+        let isMariaDB = target.flavor == .mariadb
+        let accounts = await rows(isMariaDB ? "SELECT user, host, is_role FROM mysql.user WHERE user LIKE 'ccinn\\_%'"
+                                            : "SELECT user, host, 'N' FROM mysql.user WHERE user LIKE 'ccinn\\_%'")
+        for account in accounts where account.count == 3 {
+            guard let user = account[0], let host = account[1] else { continue }
+            let quoted = SQLText.literal(user)
+            _ = try? await admin.execute(account[2] == "Y" ? "DROP ROLE \(quoted)" : "DROP USER IF EXISTS \(quoted)@\(SQLText.literal(host))")
+        }
+        for routine in await rows("SELECT ROUTINE_TYPE, ROUTINE_SCHEMA, ROUTINE_NAME FROM information_schema.ROUTINES WHERE ROUTINE_NAME LIKE 'ccinn\\_%'")
+        where routine.count == 3 {
+            guard let kind = routine[0], ["FUNCTION", "PROCEDURE"].contains(kind), let schema = routine[1], let name = routine[2] else { continue }
+            _ = try? await admin.execute("DROP \(kind) IF EXISTS \(SQLText.qualified(schema, name))")
+        }
+        for view in await rows("SELECT TABLE_SCHEMA, TABLE_NAME FROM information_schema.VIEWS WHERE TABLE_NAME LIKE 'ccinn\\_%'") where view.count == 2 {
+            guard let schema = view[0], let name = view[1] else { continue }
+            _ = try? await admin.execute("DROP VIEW IF EXISTS \(SQLText.qualified(schema, name))")
+        }
+    }
+
     static func isListening(port: Int) -> Bool {
         let descriptor = socket(AF_INET, SOCK_STREAM, 0)
         guard descriptor >= 0 else { return false }
@@ -79,4 +104,13 @@ enum IntegrationEnvironment {
         defer { try? FileManager.default.removeItem(at: destination) }
         return try Data(contentsOf: destination)
     }
+}
+
+/// The servers already swept by this test process.
+actor LeftoverSweeps {
+    static let shared = LeftoverSweeps()
+    private var swept: Set<Int> = []
+
+    /// Whether this call is the first for `port`.
+    func claim(_ port: Int) -> Bool { swept.insert(port).inserted }
 }

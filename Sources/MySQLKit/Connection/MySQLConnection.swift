@@ -136,6 +136,7 @@ public actor MySQLConnection {
     }
 
     private func applyInitialContext(_ configuration: ConnectionConfiguration) async throws {
+        try await useUTF8MB4()
         for variable in configuration.sessionVariables {
             let name = variable.name.filter { $0.isLetter || $0.isNumber || $0 == "_" }
             guard !name.isEmpty else { continue }
@@ -172,6 +173,20 @@ public actor MySQLConnection {
     /// COM_RESET_CONNECTION: drops temporary tables, user variables and session settings, keeps the login.
     public func resetSession() async throws {
         try await simpleCommand(Command.resetConnection, name: "COM_RESET_CONNECTION")
+        try await useUTF8MB4()
+    }
+
+    /// The app sends and reads UTF-8. The handshake asks for utf8mb4, but the server can switch a new connection to
+    /// another character set afterwards (`init_connect='SET NAMES gbk'`, skip-character-set-client-handshake), and in GBK,
+    /// Shift-JIS or Big5 the byte 0x5C can be part of a character, so a string would end somewhere else than the app sees.
+    /// Every connection is switched back after the handshake (after init_connect) and after a reset. A server that refuses
+    /// is left as it is: guarded statements check the character set themselves before they run.
+    private func useUTF8MB4() async throws {
+        do {
+            _ = try await execute("SET NAMES utf8mb4")
+        } catch let error as MySQLError where error.kind == .server {
+            return
+        }
     }
 
     private func simpleCommand(_ payload: [UInt8], name: String) async throws {

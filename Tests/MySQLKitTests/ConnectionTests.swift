@@ -14,6 +14,21 @@ private func connect(_ server: FakeMySQLServer, configuration: ConnectionConfigu
 
 @Suite("MySQL connection")
 struct ConnectionTests {
+    // Final review, item 7: a handshake string ends at NUL, and the encoder dropped it, so `information_\0schema` reached the
+    // server as information_schema after the read-only guard had checked another name. The handshake now refuses a user or
+    // database name holding NUL before it writes anything (no SSL request, no handshake response).
+    @Test(arguments: [("ccinn", "information_\u{0}schema"), ("ccinn", "information_schema\u{0}"), ("ccinn", "\u{0}shop"), ("cc\u{0}inn", "shop")])
+    func namesWithNULAreRefusedBeforeAnythingIsSent(user: String, database: String) async {
+        for offersTLS in [false, true] {
+            let server = FakeMySQLServer(offersTLS: offersTLS)
+            let settings = ConnectionConfiguration(endpoint: Endpoint(host: "fake", port: 3306), username: user, password: "secret",
+                                                   database: database, connectTimeout: 2)
+            let error = await #expect(throws: MySQLError.self) { _ = try await connect(server, configuration: settings) }
+            #expect(error?.kind == .invalidArgument, "\(user.debugDescription) \(database.debugDescription): \(String(describing: error))")
+            #expect(server.handshakeResponse.isEmpty && !server.sawSSLRequest && server.queries.isEmpty)
+        }
+    }
+
     @Test func handshakeSendsCredentialsAndDatabase() async throws {
         let server = FakeMySQLServer(connectionID: 99)
         let connection = try await connect(server)
@@ -80,7 +95,17 @@ struct ConnectionTests {
         var configuration = configuration()
         configuration.sessionVariables = [("sql_mode", "ANSI"), ("bad name;", "x")]
         _ = try await connect(server, configuration: configuration)
-        #expect(server.queries == ["SET SESSION sql_mode = 'ANSI'", "SET SESSION badname = 'x'"])
+        #expect(server.queries == ["SET NAMES utf8mb4", "SET SESSION sql_mode = 'ANSI'", "SET SESSION badname = 'x'"])
+    }
+
+    // Final review B: a server can switch a new connection to GBK or Shift-JIS after the handshake (init_connect), where
+    // 0x5C can be part of a character. Every connection, and every reset, goes back to utf8mb4 first.
+    @Test func everyConnectionAndResetSwitchesToUTF8MB4() async throws {
+        let server = FakeMySQLServer()
+        let connection = try await connect(server)
+        #expect(server.queries == ["SET NAMES utf8mb4"])
+        try await connection.resetSession()
+        #expect(server.queries == ["SET NAMES utf8mb4", "SET NAMES utf8mb4"])
     }
 
     @Test func okPacketReportsAffectedRows() async throws {

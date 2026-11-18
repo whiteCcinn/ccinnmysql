@@ -66,6 +66,12 @@ struct TLSRequestTests {
     @Test func resetConnectionCommand() {
         #expect(Command.resetConnection == [0x1F])
         #expect(Command.query("SELECT 1") == [0x03] + Array("SELECT 1".utf8))
+        // The text the read-only guard checked is the text the server gets: every byte, NUL and control characters
+        // included, no trimming, no Unicode normalisation (`é` and `e` + U+0301 stay different).
+        for sql in ["SELECT LOAD\0_FILE('/etc/passwd')", "SELECT 1 IN\0TO @v", " \tSELECT 1;\r\n", "SELECT 'e\u{301}', '\u{E9}'",
+                    "SELECT '\u{1}\u{7F}\u{2028}'"] {
+            #expect(Command.query(sql) == [0x03] + Array(sql.utf8), "\(sql.debugDescription)")
+        }
     }
 }
 

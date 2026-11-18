@@ -176,6 +176,8 @@ final class SQLTabModel {
     /// known; splitting, local checks and highlighting then use the servers' default, and the formatter refuses text
     /// that depends on the mode.
     private(set) var lexingMode: SQLLexingMode?
+    /// The session's `@@character_set_client`, read with the sql_mode (every connection is switched to utf8mb4).
+    private(set) var sessionCharset: String?
     @ObservationIgnored private var lexingModeTask: Task<Void, Never>?
     var effectiveLexingMode: SQLLexingMode { lexingMode ?? .standard }
     /// Line starts of `text`, maintained edit by edit (positions without scanning the text).
@@ -220,7 +222,8 @@ final class SQLTabModel {
     func formatSQL() {
         var options = Self.formatOptions
         options.lexingMode = effectiveLexingMode
-        options.sessionModeKnown = lexingMode != nil
+        options.sessionModeKnown = lexingMode != nil && sessionCharset != nil
+        options.sessionCharset = sessionCharset
         formatting.start(options: options, detached: SQLFormatting.Detached(text: text, selection: selection) { [weak self] source, result, selection in
             // No editor yet (a tab opened from launch arguments): replace the text directly, if it is still the same.
             guard let self, (self.text as NSString).isEqual(to: source) else { return false }
@@ -325,21 +328,26 @@ final class SQLTabModel {
         }
     }
 
-    /// Reads the session's sql_mode (connecting the session if needed); leaves the mode unknown when that fails.
+    /// Reads the session's sql_mode and character set (connecting the session if needed); leaves them unknown when that
+    /// fails.
     private func readLexingMode() async {
-        guard let sqlMode = try? await session.run("SELECT @@SESSION.sql_mode AS m").last?.scalar else { return }
+        let reply = try? await session.run("SELECT @@SESSION.sql_mode AS m, @@SESSION.character_set_client AS c").last
+        guard let row = reply?.rows.first, row.count == 2, let sqlMode = row[0], let charset = row[1] else { return }
+        sessionCharset = charset
         setLexingMode(SQLLexingMode(sqlMode: sqlMode))
     }
 
-    /// After a statement: a statement that mentions sql_mode (`SET sql_mode = …`, `SET @@SESSION.sql_mode = …`) may have
-    /// changed both modes, so they are read again; otherwise NO_BACKSLASH_ESCAPES comes with every reply's status.
+    /// After a statement: one that may have changed the sql_mode or the character set (any SET, such as `SET CHARACTER SET
+    /// gbk`, a CALL, an executable comment; see `SQLLexingMode.mayBeChanged`) has them read again; otherwise
+    /// NO_BACKSLASH_ESCAPES comes with every reply's status.
     private func refreshLexingMode(after sql: String) async {
-        if lexingMode == nil || sql.range(of: "sql_mode", options: .caseInsensitive) != nil {
+        if lexingMode == nil || sessionCharset == nil || SQLLexingMode.mayBeChanged(by: sql, readAs: effectiveLexingMode) {
             await readLexingMode()
             return
         }
-        let backslashEscapes = !(await session.noBackslashEscapes)
-        setLexingMode(SQLLexingMode(backslashEscapes: backslashEscapes, ansiQuotes: effectiveLexingMode.ansiQuotes))
+        var mode = effectiveLexingMode
+        mode.backslashEscapes = !(await session.noBackslashEscapes)
+        setLexingMode(mode)
     }
 
     private func setLexingMode(_ mode: SQLLexingMode) {
@@ -505,8 +513,9 @@ final class SQLTabModel {
         var limitApplied: Int?
         var mapping = SQLExecutedTextMapping(prefixLength: statement.prefixLength)
         if kind == .query, autoLimit > 0 {
-            let outcome = AutoLimit.apply(to: sql, limit: autoLimit)
-            if outcome.applied {
+            let outcome = AutoLimit.apply(to: sql, limit: autoLimit, mode: effectiveLexingMode)
+            // What was confirmed (the statement kind) is what is sent: AutoLimit keeps every token and adds `LIMIT n`.
+            if outcome.applied, SQLStatementKind.of(outcome.sql) == kind {
                 executed = outcome.sql
                 limitApplied = autoLimit
                 mapping.insertion = outcome.insertion
@@ -665,7 +674,7 @@ final class SQLTabModel {
         Task {
             defer { isRunning = false }
             do {
-                _ = try await session.run("USE \(SQLText.quoteIdentifier(name))")
+                _ = try await session.run(try SQLText.useStatement(name))
                 database = await session.database
             } catch {
                 workspace.showToast(describe(error), isError: true)

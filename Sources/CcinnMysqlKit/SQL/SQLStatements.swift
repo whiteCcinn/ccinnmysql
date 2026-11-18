@@ -337,9 +337,13 @@ public enum AutoLimit {
     /// Depth-0 words after which appending `LIMIT` would be wrong or change semantics.
     static let blockers: Set<String> = ["LIMIT", "INTO", "FOR", "LOCK", "PROCEDURE", "FETCH"]
 
-    public static func apply(to sql: String, limit: Int) -> Outcome {
+    /// Appends ` LIMIT limit` to a plain query. The result is re-lexed (in the session's `mode`): every token of `sql` must
+    /// be there unchanged, with exactly `LIMIT` and the number added after the query's last token; otherwise (a string,
+    /// name or comment left open, anything that would read differently) `sql` is returned as it is. What is checked
+    /// (the read-only guard, the confirmation of writes) and what is sent must be the same statement.
+    public static func apply(to sql: String, limit: Int, mode: SQLLexingMode = .standard) -> Outcome {
         guard limit > 0 else { return Outcome(sql: sql, applied: false) }
-        let lexer = SQLLexer(sql)
+        let lexer = SQLLexer(sql, mode: mode)
         let all = lexer.tokens()
         guard !all.contains(where: { $0.kind == .executableComment }) else { return Outcome(sql: sql, applied: false) }
         let tokens = all.filter { $0.kind != .comment }
@@ -367,6 +371,23 @@ public enum AutoLimit {
         let head = String(decoding: units[0..<insertAt], as: UTF16.self)
         let tail = String(decoding: units[insertAt...], as: UTF16.self)
         let clause = " LIMIT \(limit)"
-        return Outcome(sql: head + clause + tail, applied: true, insertion: insertAt..<(insertAt + clause.utf16.count))
+        let output = head + clause + tail
+        guard keepsTokens(of: lexer, all, insertingAfter: insertAt, in: output, mode: mode) else { return Outcome(sql: sql, applied: false) }
+        return Outcome(sql: output, applied: true, insertion: insertAt..<(insertAt + clause.utf16.count))
+    }
+
+    /// `output` lexes as the input tokens with `LIMIT` and a number added right after the token ending at `offset`.
+    private static func keepsTokens(of lexer: SQLLexer, _ tokens: [SQLToken], insertingAfter offset: Int, in output: String,
+                                    mode: SQLLexingMode) -> Bool {
+        let outLexer = SQLLexer(output, mode: mode)
+        let outTokens = outLexer.tokens()
+        guard outTokens.count == tokens.count + 2,
+              let split = tokens.firstIndex(where: { $0.range.lowerBound >= offset }).map({ $0 }) ?? Optional(tokens.count) else { return false }
+        for index in tokens.indices {
+            let out = outTokens[index < split ? index : index + 2]
+            guard out.kind == tokens[index].kind, outLexer.text(of: out) == lexer.text(of: tokens[index]) else { return false }
+        }
+        let added = outTokens[split..<(split + 2)].map { outLexer.text(of: $0) }
+        return outTokens[split].kind == .keyword && outTokens[split + 1].kind == .number && added.first == "LIMIT"
     }
 }

@@ -17,27 +17,43 @@ public struct SQLFormatOptions: Sendable, Equatable {
     public var backslashEscapes: Bool
     /// `"…"` is a quoted name, as under the session's sql_mode ANSI_QUOTES.
     public var ansiQuotes: Bool
-    /// Whether the session's sql_mode is known. When it is not, text that lexes differently under NO_BACKSLASH_ESCAPES or
-    /// ANSI_QUOTES (a backslash in a string, a `"…"` token) is not formatted.
+    /// Active sql_modes the formatter does not model (ORACLE, PIPES_AS_CONCAT, …): nothing is formatted.
+    public var unmodelledSQLModes: [String]
+    /// Whether the session's sql_mode and character set are known. When they are not, text that lexes differently under
+    /// NO_BACKSLASH_ESCAPES, ANSI_QUOTES or another character set (a backslash in a string, a `"…"` token, a character
+    /// outside ASCII) is not formatted.
     public var sessionModeKnown: Bool
+    /// The session's character set (`@@character_set_client`), when known. The app sends UTF-8; in any other multibyte
+    /// character set a byte such as 0x5C can be part of a character, so nothing is formatted unless it is one of
+    /// `SQLFormatter.safeCharsets`.
+    public var sessionCharset: String?
     private var clampedIndentWidth: Int
 
     public init(keywordCase: KeywordCase = .upper, indentWidth: Int = 2, backslashEscapes: Bool = true, ansiQuotes: Bool = false,
-                sessionModeKnown: Bool = true) {
+                sessionModeKnown: Bool = true, sessionCharset: String? = nil) {
         self.keywordCase = keywordCase
         clampedIndentWidth = Self.clamped(indentWidth)
         self.backslashEscapes = backslashEscapes
         self.ansiQuotes = ansiQuotes
+        unmodelledSQLModes = []
         self.sessionModeKnown = sessionModeKnown
+        self.sessionCharset = sessionCharset
     }
 
     public var lexingMode: SQLLexingMode {
-        get { SQLLexingMode(backslashEscapes: backslashEscapes, ansiQuotes: ansiQuotes) }
+        get { SQLLexingMode(backslashEscapes: backslashEscapes, ansiQuotes: ansiQuotes, unmodelledModes: unmodelledSQLModes) }
         set {
             backslashEscapes = newValue.backslashEscapes
             ansiQuotes = newValue.ansiQuotes
+            unmodelledSQLModes = newValue.unmodelledModes
         }
     }
+
+    /// The session's character set reads UTF-8 text as the app sends it (latin1 and ASCII have no multibyte characters).
+    public var sessionCharsetIsSafe: Bool { sessionCharset.map { SQLFormatter.safeCharsets.contains($0.lowercased()) } ?? true }
+
+    /// Whether this session's text can be formatted at all: no unmodelled sql_mode, a safe character set.
+    var sessionAllowsFormatting: Bool { unmodelledSQLModes.isEmpty && sessionCharsetIsSafe }
 
     static func clamped(_ width: Int) -> Int { min(max(width, 1), 8) }
 }
@@ -70,6 +86,9 @@ public enum SQLFormatter {
         16 * max(0, length) + 4_096
     }
 
+    /// Character sets in which the app's UTF-8 text reads as written.
+    public static let safeCharsets: Set<String> = ["utf8mb4", "utf8mb3", "utf8", "ascii", "latin1"]
+
     public static func format(_ text: String, options: SQLFormatOptions = SQLFormatOptions()) -> String? {
         layout(text, options: options)?.text
     }
@@ -83,7 +102,7 @@ public enum SQLFormatter {
         let count = lexer.units.count
         // Not NSMaxRange: `location + length` overflows (and traps) for NSNotFound.
         guard range.location >= 0, range.length >= 0, range.location <= count, range.length <= count - range.location else { return nil }
-        guard !Task.isCancelled, options.sessionModeKnown || !dependsOnLexingMode(text) else { return nil }
+        guard !Task.isCancelled, options.sessionAllowsFormatting, options.sessionModeKnown || !dependsOnSession(text) else { return nil }
         let tokens = lexer.tokens()
         guard let span = tokenSpan(of: range, in: tokens, lexer: lexer) else {
             return SQLFormatEdit(range: range, replacement: lexer.text(in: range.location..<NSMaxRange(range))) // nothing to format
@@ -167,6 +186,15 @@ public enum SQLFormatter {
         }
     }
 
+    /// Whether `text` could read differently depending on the session: `dependsOnLexingMode`, or a character outside
+    /// ASCII outside comments (in a multibyte character set such as GBK its bytes can swallow the quote or backslash after
+    /// them). Comments are safe: they end at `*/` or a line break, bytes no such character set uses inside a character.
+    public static func dependsOnSession(_ text: String) -> Bool {
+        if dependsOnLexingMode(text) { return true }
+        let lexer = SQLLexer(text)
+        return lexer.tokens().contains { $0.kind != .comment && lexer.units[$0.range].contains { $0 >= 0x80 } }
+    }
+
     static func equivalent(lexer: SQLLexer, tokens: [SQLToken], to output: String, caseChangeable: Set<Int>, mode: SQLLexingMode) -> Bool {
         let outLexer = SQLLexer(output, mode: mode)
         let outTokens = outLexer.tokens()
@@ -238,7 +266,7 @@ public enum SQLFormatter {
     /// `lineBreak` is the line break of the whole text (a selection takes its text's); found in `text` when `nil`.
     /// `frozenOffsets`: UTF-16 offsets (in `text`) of tokens that keep their exact text.
     static func layout(_ text: String, options: SQLFormatOptions, lineBreak: String? = nil, frozenOffsets: Set<Int> = []) -> Layout? {
-        guard !Task.isCancelled, options.sessionModeKnown || !dependsOnLexingMode(text) else { return nil }
+        guard !Task.isCancelled, options.sessionAllowsFormatting, options.sessionModeKnown || !dependsOnSession(text) else { return nil }
         let lexer = SQLLexer(text, mode: options.lexingMode)
         let tokens = lexer.tokens()
         guard !tokens.isEmpty else { return Layout(text: "", caseChangeable: []) }
