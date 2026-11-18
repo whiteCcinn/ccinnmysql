@@ -482,8 +482,16 @@ private struct OutcomeView: View {
                 .fixedSize()
                 .help("Show as grid, chart or plan")
                 Menu {
-                    Button("Copy as TSV") { model.copyTSV(rowSet) }
-                    Button("Export CSV…") { model.exportCSV(rowSet) }
+                    Menu("Copy as") {
+                        ForEach(ExportFormat.allCases.filter(\.isCopyable)) { format in
+                            Button(format.displayName) { model.copy(rowSet, sql: outcome.executedSQL, as: format) }
+                        }
+                    }
+                    Menu("Export as") {
+                        ForEach(ExportFormat.allCases) { format in
+                            Button("\(format.displayName)…") { model.export(rowSet, sql: outcome.executedSQL, as: format) }
+                        }
+                    }
                     Divider()
                     Button("Copy SQL") { Pasteboard.copy(outcome.executedSQL) }
                 } label: {
@@ -522,7 +530,7 @@ private struct OutcomeView: View {
             case .grid:
                 let plan = outcome.editEligibility?.plan
                 ResultGrid(resultID: outcome.resultID, columns: rowSet.columns, rows: rowSet.rows,
-                           insertTableName: rowSet.columns.first.map { $0.table.isEmpty ? "`table`" : SQLText.quoteIdentifier($0.table) } ?? "`table`",
+                           insertTableName: ResultExport.insertTarget(columns: rowSet.columns, sql: outcome.executedSQL),
                            onInspect: { model.inspected = $0 }, editableColumns: plan?.editableColumns ?? [],
                            onEdit: plan == nil ? nil : { model.beginEdit(outcome, $0) })
             case .chart:
