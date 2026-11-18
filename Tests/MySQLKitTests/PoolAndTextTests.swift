@@ -90,6 +90,17 @@ struct TextHelperTests {
         #expect(SQLText.literal("a\nb\0") == "'a\\nb\\0'")
     }
 
+    // Cross-port (StarRocks): a quote written as \' ends the string where backslashes are not escapes (sql_mode
+    // NO_BACKSLASH_ESCAPES as a global or account default), so a name in metadata SQL could inject. Quotes are doubled,
+    // which reads the same in both modes; a backslash is \\ (a wrong value under NO_BACKSLASH_ESCAPES, never an injection).
+    @Test func literalsDoubleQuotesSoNoModeEndsThem() {
+        #expect(SQLText.literal("x'") == "'x'''")
+        #expect(SQLText.literal("x\\") == "'x\\\\'")
+        #expect(SQLText.literal("\\'") == "'\\\\'''")
+        #expect(SQLText.literal("x\\' UNION SELECT 'i' --") == "'x\\\\'' UNION SELECT ''i'' --'")
+        #expect(SQLText.literal("x\\' UNION SELECT 'i' --", noBackslashEscapes: true) == "'x\\'' UNION SELECT ''i'' --'")
+    }
+
     // Final review, item 7: quoting drops NUL, so `USE` of a name holding one would switch to a different database.
     @Test func useStatementsRefuseNamesWithNUL() throws {
         #expect(try SQLText.useStatement("a`b") == "USE `a``b`")

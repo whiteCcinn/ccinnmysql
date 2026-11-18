@@ -122,7 +122,8 @@ public struct AccountPrivileges: Sendable, Equatable {
     ]
 
     /// Every privilege name reviewed here.
-    public static let reviewedPrivileges = staticPrivileges.union(harmlessPrivileges).union(reviewedPrivilegedDynamic).union(["FILE", "SUPER", "PROCESS"])
+    public static let reviewedPrivileges: Set<String> = staticPrivileges.union(harmlessPrivileges).union(reviewedPrivilegedDynamic)
+        .union(["FILE", "SUPER", "PROCESS"])
 
     /// Schemas where reading exposes credentials (mysql) or other sessions' statements (performance_schema, and sys, which
     /// reads it).

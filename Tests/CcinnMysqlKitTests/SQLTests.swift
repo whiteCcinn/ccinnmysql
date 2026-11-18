@@ -136,7 +136,8 @@ struct SQLLexerTests {
         #expect(tokens[3].range == 13..<14)
     }
 
-    @Test func randomInputNeverCrashes() {
+    @Test func randomInputNeverCrashes() async {
+        await onDedicatedThread {
         var generator = SystemRandomNumberGenerator()
         let alphabet = Array("SELECT'\"`#-/*!;$@.0123456789eE abc\n\\()=<>DELIMITER")
         for _ in 0..<3_000 {
@@ -148,6 +149,7 @@ struct SQLLexerTests {
             _ = ReadOnlySQLGuard.check(text)
             _ = SQLRedactor.redact(text)
             _ = SQLErrorLocator.offset(in: text, message: "near '\(text.prefix(5))' at line 1")
+        }
         }
     }
 }
@@ -482,7 +484,9 @@ struct CompletionTests {
 
     @Test func columnsOfAnAlias() {
         let result = complete("SELECT o.| FROM orders o")
-        #expect(result.items.map(\.label) == ["order_id", "city", "total"].sorted { $0.localizedStandardCompare($1) == .orderedAscending })
+        let expected: [String] = ["order_id", "city", "total"].sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        let labels: [String] = result.items.map(\.label)
+        #expect(labels == expected)
         #expect(result.items.allSatisfy { $0.kind == .column })
     }
 
@@ -611,5 +615,19 @@ struct SessionReadingChangeTests {
                       "SELECT 1 -- SET NAMES gbk"])
     func doesNotChangeTheReading(sql: String) {
         #expect(!SQLLexingMode.mayBeChanged(by: sql, readAs: .standard), "\(sql)")
+    }
+}
+
+// Cross-port (StarRocks): the app's literals stay one string whether or not the session reads backslashes as escapes.
+@Suite("SQL literals")
+struct SQLLiteralTests {
+    @Test(arguments: ["x'", "x\\", "\\'", "x\\' UNION SELECT 'i' --", "x' UNION SELECT 0x69 -- ", "'; DROP TABLE t; --", "\\\\'", "a\u{0}b\n'\\"])
+    func literalsAreOneStringInEveryMode(value: String) {
+        for backslashEscapes in [true, false] {
+            let tokens = SQLLexer("SELECT " + SQLText.literal(value), backslashEscapes: backslashEscapes).tokens()
+            #expect(tokens.count == 2 && tokens.last?.kind == .string, "\(value.debugDescription) escapes=\(backslashEscapes): \(tokens)")
+        }
+        let noEscapes = SQLLexer("SELECT " + SQLText.literal(value, noBackslashEscapes: true), backslashEscapes: false).tokens()
+        #expect(noEscapes.count == 2 && noEscapes.last?.kind == .string, "\(value.debugDescription)")
     }
 }

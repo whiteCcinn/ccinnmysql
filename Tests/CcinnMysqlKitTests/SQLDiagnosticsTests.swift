@@ -380,14 +380,20 @@ struct ErrorLocatorBoundsTests {
         #expect(mapping.sourceOffset(forExecuted: 25) == 12)
     }
 
-    @Test func hugeStatementsStayLinear() {
-        // Many partial matches of a truncated snippet must not make the search quadratic.
+    @Test func hugeStatementsStayLinear() async {
+        // Many partial matches of a truncated snippet must not make the search quadratic. Quadratic work takes minutes; the
+        // bound leaves room for a busy CI runner.
         let sql = "SELECT " + String(repeating: "a, ", count: 50_000) + "b FORM t"
-        let started = ContinuousClock.now
-        #expect(slice(sql, SQLErrorLocator.range(in: sql, message: Recorded.mysql("t"))) == "t")
         let snippet = String(repeating: "a, ", count: 26) + "a,"
-        #expect(SQLErrorLocator.range(in: sql, message: Recorded.mysql(snippet, line: 1)) == 7..<8)
-        #expect(ContinuousClock.now - started < .seconds(5))
+        let (first, second, elapsed) = await onDedicatedThread { () -> (Range<Int>?, Range<Int>?, Duration) in
+            let started = ContinuousClock.now
+            let first = SQLErrorLocator.range(in: sql, message: Recorded.mysql("t"))
+            let second = SQLErrorLocator.range(in: sql, message: Recorded.mysql(snippet, line: 1))
+            return (first, second, ContinuousClock.now - started)
+        }
+        #expect(slice(sql, first) == "t")
+        #expect(second == 7..<8)
+        #expect(elapsed < .seconds(15))
     }
 }
 

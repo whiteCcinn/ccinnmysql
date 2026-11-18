@@ -109,12 +109,12 @@ public enum SQLNativeFunctions {
     PARENTHESES REGEXP RLIKE TO_DATE TO_NUMBER TRUNC UUID_V4 UUID_V7 VALUES XOR
     """)
 
-    public static let mysql = common.union(mysqlOnly)
-    public static let mariadb = common.union(mariadbOnly)
-    static let anyFlavor = mysql.union(mariadb)
+    public static let mysql: Set<String> = common.union(mysqlOnly)
+    public static let mariadb: Set<String> = common.union(mariadbOnly)
+    static let anyFlavor: Set<String> = mysql.union(mariadb)
 
     /// Every name reviewed here: a help-table function name outside it fails the per-version integration test.
-    public static let reviewed = mysql.union(mariadb).union(denied).union(reviewedNotCallable)
+    public static let reviewed: Set<String> = mysql.union(mariadb).union(denied).union(reviewedNotCallable)
 
     /// The natives for `flavor`; before the server is known (`nil`), those of any flavor (the check is repeated once it is).
     public static func allowed(for flavor: ServerFlavor?) -> Set<String> {

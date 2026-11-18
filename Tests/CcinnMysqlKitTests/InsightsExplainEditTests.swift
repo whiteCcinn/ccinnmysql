@@ -133,21 +133,31 @@ struct ExplainParserTests {
         #expect(join.children.count == 2)
     }
 
-    @Test func malformedInputThrowsOrDegrades() {
+    @Test func malformedInputThrowsOrDegrades() async {
         #expect(throws: ExplainParseError.self) { try ExplainParser.parse("not a plan") }
         #expect(throws: ExplainParseError.self) { try ExplainParser.parse("{\"query_block\": ") }
         var deep = ""
         for _ in 0..<500 { deep += "{\"query_block\": " }
         deep += "{}" + String(repeating: "}", count: 500)
         #expect(throws: ExplainParseError.self) { try ExplainParser.parse(deep) }
-        let deeper = String(repeating: "[", count: 100_000)
-        #expect(throws: ExplainParseError.self) { try ExplainParser.parse("{\"a\": " + deeper) }
-        var generator = SystemRandomNumberGenerator()
-        for _ in 0..<500 {
-            let tree = (0..<Int.random(in: 1..<30, using: &generator)).map { _ in
-                String(repeating: " ", count: Int.random(in: 0..<40, using: &generator)) + "-> Op (cost=\(Int.random(in: 0..<9))..x rows=1e999) (actual time=1..2 rows=nan loops=1)"
-            }.joined(separator: "\n")
-            _ = ExplainParser.parseTree(tree)
+        let deeperThrows = await onDedicatedThread { () -> Bool in
+            let deeper = String(repeating: "[", count: 100_000)
+            do {
+                _ = try ExplainParser.parse("{\"a\": " + deeper)
+                return false
+            } catch {
+                return error is ExplainParseError
+            }
+        }
+        #expect(deeperThrows)
+        await onDedicatedThread {
+            var generator = SystemRandomNumberGenerator()
+            for _ in 0..<500 {
+                let tree = (0..<Int.random(in: 1..<30, using: &generator)).map { _ in
+                    String(repeating: " ", count: Int.random(in: 0..<40, using: &generator)) + "-> Op (cost=\(Int.random(in: 0..<9))..x rows=1e999) (actual time=1..2 rows=nan loops=1)"
+                }.joined(separator: "\n")
+                _ = ExplainParser.parseTree(tree)
+            }
         }
     }
 }

@@ -14,11 +14,14 @@ struct NameFoldingTests {
     static let expected: Set<UInt32> = [0x00DF, 0x0130, 0x0131, 0x0149, 0x017F, 0x01F0, 0x1E96, 0x1E97, 0x1E98, 0x1E99, 0x1E9A, 0x212A,
                                         0xFB00, 0xFB01, 0xFB02, 0xFB03, 0xFB04, 0xFB05, 0xFB06]
 
-    @Test func theLettersThatCaseMapToASCIIAreExactlyNineteen() {
-        var found: Set<UInt32> = []
-        for value in UInt32(0)...0x10FFFF {
-            guard let scalar = Unicode.Scalar(value), SQLNameFolding.caseMapsToASCII(scalar) else { continue }
-            found.insert(value)
+    @Test func theLettersThatCaseMapToASCIIAreExactlyNineteen() async {
+        let found = await onDedicatedThread { () -> Set<UInt32> in
+            var found: Set<UInt32> = []
+            for value in UInt32(0)...0x10FFFF {
+                guard let scalar = Unicode.Scalar(value), SQLNameFolding.caseMapsToASCII(scalar) else { continue }
+                found.insert(value)
+            }
+            return found
         }
         #expect(found == Self.expected, "\(found.sorted().map { String($0, radix: 16) })")
         #expect(!SQLNameFolding.caseMapsToASCII("a") && !SQLNameFolding.caseMapsToASCII("é") && !SQLNameFolding.caseMapsToASCII("Å"))

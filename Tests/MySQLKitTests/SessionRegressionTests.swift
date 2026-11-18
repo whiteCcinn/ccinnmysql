@@ -41,7 +41,7 @@ struct SessionRegressionTests {
         await session.cancel(graceSeconds: 0.2)
         await #expect { _ = try await long.value } throws: { ($0 as? MySQLError)?.kind == .cancelled }
         // The statement would hang forever, so finishing proves the cancel; the bound allows for a busy CI runner.
-        #expect(ContinuousClock.now - started < .seconds(10))
+        #expect(ContinuousClock.now - started < .seconds(25))
         #expect(!cluster.statements.contains { $0.contains("long") }, "the cancelled statement never reached the server")
         #expect(cluster.kills.isEmpty)
         // The request applied to that run only: the next statement runs normally.
@@ -125,9 +125,9 @@ struct CancelledConnectTests {
             return try await Transports.network(Endpoint(host: "127.0.0.1", port: 9), TransportOptions(connectTimeout: 30))
         }
         await #expect { _ = try await task.value } throws: { ($0 as? MySQLError)?.kind == .cancelled }
-        // A cancelled connect must not wait for the 30 s connect timeout. Generous bound: on a busy CI runner the
-        // task itself can wait seconds for a thread.
-        #expect(ContinuousClock.now - started < .seconds(10))
+        // A cancelled connect must not wait for the 30 s connect timeout. Generous bound, still below it: on a busy CI
+        // runner the task itself can wait seconds for a thread.
+        #expect(ContinuousClock.now - started < .seconds(25))
     }
 
     @Test func cancelledCheckoutReservesNoSlot() async throws {

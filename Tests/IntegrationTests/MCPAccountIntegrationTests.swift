@@ -189,6 +189,41 @@ struct MCPAccountIntegrationTests {
         await session.close()
     }
 
+    // Cross-port (StarRocks): with NO_BACKSLASH_ESCAPES in a session, a quote escaped as \' ends the string, and a name in
+    // metadata SQL could inject. Two layers, both checked live: the app's pool sessions (where metadata SQL runs) drop
+    // NO_BACKSLASH_ESCAPES even when the account or connection sets it, and the app's literals double quotes, so they hold
+    // in a session that keeps it. Negative control: an escaper writing \' does inject in that session.
+    @Test(arguments: targets)
+    func metadataLiteralsHoldWithoutBackslashEscapes(target: IntegrationEnvironment.Target) async throws {
+        var settings = IntegrationEnvironment.rootConfiguration(target)
+        settings.sessionVariables = [(name: "sql_mode", value: "NO_BACKSLASH_ESCAPES")]
+        let names = ["x' UNION SELECT 0x69 -- ", "x\\' UNION SELECT 'i' -- ", "\\'"]
+
+        let client = try await MySQLClient.connect(settings, poolSize: 1)
+        defer { Task { await client.close() } }
+        let poolMode = try await client.query("SELECT @@SESSION.sql_mode AS m").flatMap(\.rows).first?.first ?? nil
+        #expect(poolMode?.contains("NO_BACKSLASH_ESCAPES") == false, "\(target.label): pool sessions drop it: \(poolMode ?? "nil")")
+        for name in names {
+            let listing = try await client.objects(schema: name)
+            #expect(listing.objects.isEmpty, "\(target.label) \(name.debugDescription): \(listing.objects.map(\.name))")
+            #expect(try await client.columns(schema: "shop", table: name).isEmpty, "\(target.label) \(name.debugDescription)")
+        }
+
+        let connection = try await MySQLConnection.connect(settings)
+        let mode = try await connection.query("SELECT @@SESSION.sql_mode AS m").flatMap(\.rows).first?.first ?? nil
+        #expect(mode?.contains("NO_BACKSLASH_ESCAPES") == true, "\(target.label): \(mode ?? "nil")")
+        func tables(_ literal: String) async throws -> [String?] {
+            try await connection.query("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = \(literal)").flatMap(\.rows).map { $0.first ?? nil }
+        }
+        let naive = try await tables("'" + names[0].replacingOccurrences(of: "'", with: "\\'") + "'")
+        #expect(naive == ["i"], "\(target.label): the negative control should inject: \(naive)")
+        for name in names {
+            let rows = try await tables(SQLText.literal(name))
+            #expect(rows.isEmpty, "\(target.label) \(name.debugDescription): \(rows)")
+        }
+        await connection.close()
+    }
+
     // Final review, item 5: MariaDB shows an account the grants of its own roles only, not of roles those roles hold, so a
     // nested role fails closed with a message that says so; MySQL expands nested roles (SHOW GRANTS … USING).
     @Test(arguments: targets)

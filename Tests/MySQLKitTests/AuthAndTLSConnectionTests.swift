@@ -7,7 +7,8 @@ import Testing
 @testable import MySQLKit
 
 private func configuration(password: String = "secret", tls: TLSMode = .disabled, retrieval: Bool = false, pem: String? = nil) -> ConnectionConfiguration {
-    ConnectionConfiguration(endpoint: Endpoint(host: "fake"), username: "ccinn", password: password, connectTimeout: 2,
+    // connectTimeout is a hang guard (fake handshakes take milliseconds): 2 s timed out on a loaded machine.
+    ConnectionConfiguration(endpoint: Endpoint(host: "fake"), username: "ccinn", password: password, connectTimeout: 10,
                             tls: TLSOptions(mode: tls), allowPublicKeyRetrieval: retrieval, serverPublicKeyPEM: pem)
 }
 

@@ -312,7 +312,9 @@ struct SQLFormatterTests {
     /// The safety property on random input, built from pieces MySQL glues together when they touch (`\N`, `0x1F`,
     /// `X'41'`, `@'v'`, `t.order`, `count(`), `:` runs and `@` soup, with and without spaces between them: same tokens,
     /// whitespace only where it cannot matter, case only on reserved or positional words, and idempotent.
-    @Test func fuzzedInputKeepsItsMeaningAndIsIdempotent() {
+    @Test func fuzzedInputKeepsItsMeaningAndIsIdempotent() async {
+        let (failures, refused) = await onDedicatedThread { () -> ([String], Int) in
+        var failures: [String] = []
         var generator = SystemRandomNumberGenerator()
         var refused = 0
         for _ in 0..<4_000 {
@@ -329,18 +331,23 @@ struct SQLFormatterTests {
                 if !malformed { refused += 1 } // never wrong, at worst unhelpful
                 continue
             }
-            #expect(!malformed, "a literal the server rejects, or a backslash outside strings, is never formatted: \(text.debugDescription)")
             let context = "\(text.debugDescription) -> \(formatted.debugDescription)"
-            #expect(SQLFormatter.sameTokens(text, formatted, backslashEscapes: options.backslashEscapes), "\(context)")
-            #expect(Self.changesAreSafe(from: text, to: formatted, backslashEscapes: options.backslashEscapes), "\(context)")
-            #expect(SQLFormatter.format(formatted, options: options) == formatted, "not idempotent: \(context)")
+            if malformed { failures.append("a literal the server rejects, or a backslash outside strings, was formatted: \(context)") }
+            if !SQLFormatter.sameTokens(text, formatted, backslashEscapes: options.backslashEscapes) { failures.append("tokens: \(context)") }
+            if !Self.changesAreSafe(from: text, to: formatted, backslashEscapes: options.backslashEscapes) { failures.append("changes: \(context)") }
+            if SQLFormatter.format(formatted, options: options) != formatted { failures.append("not idempotent: \(context)") }
         }
+        return (failures, refused)
+        }
+        #expect(failures.isEmpty, "\(failures.count) failures, first: \(failures.prefix(5))")
         #expect(refused < 40, "the formatter should almost never have to refuse (\(refused) of 4000)")
     }
 
     /// The same property for random selections of random text: the whole text after the edit must pass the check, and
     /// the edit covers whole tokens only.
-    @Test func fuzzedSelectionsKeepTheWholeTextsMeaning() {
+    @Test func fuzzedSelectionsKeepTheWholeTextsMeaning() async {
+        let (failures, formatted) = await onDedicatedThread { () -> ([String], Int) in
+        var failures: [String] = []
         var generator = SystemRandomNumberGenerator()
         var formatted = 0
         for _ in 0..<3_000 {
@@ -357,12 +364,19 @@ struct SQLFormatterTests {
             formatted += 1
             let spliced = (text as NSString).replacingCharacters(in: edit.range, with: edit.replacement)
             let context = "\(text.debugDescription) \(range) -> \(spliced.debugDescription)"
-            #expect(SQLFormatter.sameTokens(text, spliced, backslashEscapes: options.backslashEscapes), "\(context)")
-            #expect(Self.changesAreSafe(from: text, to: spliced, backslashEscapes: options.backslashEscapes), "\(context)")
+            if !SQLFormatter.sameTokens(text, spliced, backslashEscapes: options.backslashEscapes) { failures.append("tokens: \(context)") }
+            if !Self.changesAreSafe(from: text, to: spliced, backslashEscapes: options.backslashEscapes) { failures.append("changes: \(context)") }
             let tokens = SQLLexer(text, backslashEscapes: options.backslashEscapes).tokens()
-            #expect(!tokens.contains { $0.range.lowerBound < edit.range.location && $0.range.upperBound > edit.range.location }, "\(context)")
-            #expect(!tokens.contains { $0.range.lowerBound < NSMaxRange(edit.range) && $0.range.upperBound > NSMaxRange(edit.range) }, "\(context)")
+            if tokens.contains(where: { $0.range.lowerBound < edit.range.location && $0.range.upperBound > edit.range.location }) {
+                failures.append("splits a token at the start: \(context)")
+            }
+            if tokens.contains(where: { $0.range.lowerBound < NSMaxRange(edit.range) && $0.range.upperBound > NSMaxRange(edit.range) }) {
+                failures.append("splits a token at the end: \(context)")
+            }
         }
+        return (failures, formatted)
+        }
+        #expect(failures.isEmpty, "\(failures.count) failures, first: \(failures.prefix(5))")
         #expect(formatted > 2_000)
     }
 
@@ -492,14 +506,18 @@ struct SQLFormatterTests {
         #expect(format("select a -- note   \nfrom t") == "SELECT a -- note   \nFROM t")
     }
 
-    @Test func aMegabyteScriptFormatsQuickly() throws {
+    @Test func aMegabyteScriptFormatsQuickly() async throws {
         let statement = "select o.id, sum(o.amount) total, case when o.x > 1 then 'a' when o.x < 0 then 'b' else 'c' end k "
             + "from shop.orders o left join shop.customers c on o.customer_id = c.id and c.city in ('KL', 'PG') "
             + "where o.created_at between '2024-01-01' and '2024-12-31' and o.status = 'paid' group by o.id, k order by total desc limit 10;\n"
         let script = String(repeating: statement, count: 1_048_576 / statement.utf8.count + 1)
-        let started = ContinuousClock.now
-        let formatted = try #require(format(script))
-        #expect(ContinuousClock.now - started < .seconds(20), "debug build bound; release is far faster")
+        let (result, elapsed) = await onDedicatedThread { () -> (String?, Duration) in
+            let started = ContinuousClock.now
+            let result = SQLFormatter.format(script)
+            return (result, ContinuousClock.now - started)
+        }
+        let formatted = try #require(result)
+        #expect(elapsed < .seconds(20), "debug build bound; release is far faster: \(elapsed)")
         #expect(formatted.count > script.count)
     }
 
@@ -657,7 +675,9 @@ struct SQLFormatterTests {
         let selection = Task.detached { SQLFormatter.formatSelection(in: script, range: NSRange(location: 0, length: (script as NSString).length)) }
         selection.cancel()
         #expect(await selection.value == nil)
-        #expect(ContinuousClock.now - started < .seconds(5))
+        // A nil result already proves the formatter stopped on cancellation (a finished format returns text). This bound
+        // only guards against a hang: on a 3-core CI runner the detached tasks can wait many seconds for a thread.
+        #expect(ContinuousClock.now - started < .seconds(25))
     }
 
     // MARK: Final review
@@ -882,7 +902,9 @@ struct SQLFormatterTests {
     }
 
     // Review #5b, the proof: text that `dependsOnLexingMode` passes lexes and splits the same under every mode.
-    @Test func textWithoutModeDependentTokensLexesTheSameInEveryMode() {
+    @Test func textWithoutModeDependentTokensLexesTheSameInEveryMode() async {
+        let (failures, checked) = await onDedicatedThread { () -> ([String], Int) in
+        var failures: [String] = []
         var generator = SystemRandomNumberGenerator()
         let pieces = ["'", "\"", "`", "\\", "a", " ", ";", "--", " -- ", "#", "\n", "/*", "*/", "''", "\"\"", "x", "1"]
         var checked = 0
@@ -892,11 +914,15 @@ struct SQLFormatterTests {
             checked += 1
             let reference = SQLLexer(text).tokens()
             for mode in SQLLexingMode.all {
-                #expect(SQLLexer(text, mode: mode).tokens().map(\.range) == reference.map(\.range), "\(text.debugDescription) \(mode)")
-                #expect(SQLStatementSplitter.split(text, mode: mode).map(\.range) == SQLStatementSplitter.split(text).map(\.range),
-                        "\(text.debugDescription) \(mode)")
+                if SQLLexer(text, mode: mode).tokens().map(\.range) != reference.map(\.range) { failures.append("tokens: \(text.debugDescription) \(mode)") }
+                if SQLStatementSplitter.split(text, mode: mode).map(\.range) != SQLStatementSplitter.split(text).map(\.range) {
+                    failures.append("split: \(text.debugDescription) \(mode)")
+                }
             }
         }
+        return (failures, checked)
+        }
+        #expect(failures.isEmpty, "\(failures.count) failures, first: \(failures.prefix(5))")
         #expect(checked > 2_000)
     }
 
@@ -950,7 +976,7 @@ struct SQLFormatterTests {
 
     // Look-aheads and nesting stay linear: unclosed parentheses, nested CASEs and an EXPLAIN prefix before thousands of
     // parentheses. The bound is for debug builds; `swift test -c release` checks the release bound.
-    @Test func pathologicalNestingStaysLinear() throws {
+    @Test func pathologicalNestingStaysLinear() async throws {
         #if DEBUG
         let bound = Duration.seconds(10)
         #else
@@ -962,11 +988,15 @@ struct SQLFormatterTests {
             "explain " + String(repeating: "(", count: 20_000) + String(repeating: " select 1", count: 20_000),
             "select " + String(repeating: "f(a, ", count: 30_000) + "1" + String(repeating: ")", count: 30_000) + " from t",
         ]
-        for input in inputs {
-            let started = ContinuousClock.now
-            _ = format(input)
-            let elapsed = ContinuousClock.now - started
-            #expect(elapsed < bound, "\(input.prefix(30))…: \(elapsed)")
+        let timings = await onDedicatedThread { () -> [(String, Duration)] in
+            inputs.map { input in
+                let started = ContinuousClock.now
+                _ = SQLFormatter.format(input)
+                return (String(input.prefix(30)), ContinuousClock.now - started)
+            }
+        }
+        for (input, elapsed) in timings {
+            #expect(elapsed < bound, "\(input)…: \(elapsed)")
         }
     }
 

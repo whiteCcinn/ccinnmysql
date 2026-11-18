@@ -17,7 +17,8 @@ struct LegacyTLSServerTests {
                 return error.kind == .tls && error.message.contains("TLS 1.0/1.1") && error.message.contains("SSH tunnel")
                     && error.message.contains("within 3 s") && error.message.contains("not responding")
             }
-            #expect(ContinuousClock.now - started < .seconds(6))
+            // The 3 s deadline fired instead of a hang; the bound leaves room for a busy CI runner.
+            #expect(ContinuousClock.now - started < .seconds(20))
         }
         #expect(await server.stop() == 0, "credentials never travel in plaintext, not even in preferred mode")
     }

@@ -5,7 +5,7 @@ import Testing
 
 private func configuration(password: String = "secret", database: String? = "shop", allowCleartext: Bool = false) -> ConnectionConfiguration {
     ConnectionConfiguration(endpoint: Endpoint(host: "fake", port: 3306), username: "ccinn", password: password, database: database,
-                            connectTimeout: 2, allowCleartextPassword: allowCleartext)
+                            connectTimeout: 10, allowCleartextPassword: allowCleartext) // a hang guard: fake handshakes take milliseconds
 }
 
 private func connect(_ server: FakeMySQLServer, configuration: ConnectionConfiguration = configuration()) async throws -> MySQLConnection {
@@ -22,7 +22,7 @@ struct ConnectionTests {
         for offersTLS in [false, true] {
             let server = FakeMySQLServer(offersTLS: offersTLS)
             let settings = ConnectionConfiguration(endpoint: Endpoint(host: "fake", port: 3306), username: user, password: "secret",
-                                                   database: database, connectTimeout: 2)
+                                                   database: database, connectTimeout: 10)
             let error = await #expect(throws: MySQLError.self) { _ = try await connect(server, configuration: settings) }
             #expect(error?.kind == .invalidArgument, "\(user.debugDescription) \(database.debugDescription): \(String(describing: error))")
             #expect(server.handshakeResponse.isEmpty && !server.sawSSLRequest && server.queries.isEmpty)
