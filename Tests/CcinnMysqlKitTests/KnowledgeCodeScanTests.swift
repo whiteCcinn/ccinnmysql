@@ -107,6 +107,15 @@ struct KnowledgeCodeScanTests {
         _ = try await KnowledgeService.refresh(key, source: Source(), store: store, history: [], infer: noInference, now: now)
         let scanned = try #require(try store.database(key)?.relationships.first { $0.evidence.contains { $0.source == .scan } })
         #expect(scanned.from.table == "orders" && scanned.evidence.first?.path == "repo.go")
+        // A folder an AI linked (link_project) is never scanned: only the user decides which code the app reads.
+        let aiFolder = ScanFolder()
+        try aiFolder.write("ai.go", "SELECT * FROM customers c JOIN orders o ON o.id = c.id")
+        try store.updateIndex { (index: inout KnowledgeIndex) -> Void in
+            index.projects.append(KnowledgeIndex.Project(id: "pai", path: aiFolder.url.path, name: "ai", gitRemote: nil, addedAt: now, addedBy: "ai:claude-code"))
+            index.links.append(KnowledgeIndex.Link(project: "pai", database: key.fileID, addedAt: now, addedBy: "ai:claude-code"))
+        }
+        _ = try await KnowledgeService.refresh(key, source: Source(), store: store, history: [], infer: noInference, now: now)
+        #expect(try store.database(key)?.relationships.flatMap(\.evidence).contains { $0.project == "pai" } == false)
         try FileManager.default.removeItem(at: folder.url.appendingPathComponent("repo.go"))
         _ = try await KnowledgeService.refresh(key, source: Source(), store: store, history: [], infer: noInference, now: now)
         #expect(try store.database(key)?.relationships.contains { $0.evidence.contains { $0.source == .scan } } == false)

@@ -45,10 +45,11 @@ public enum KnowledgeService {
         return report
     }
 
-    /// The local projects linked to `key`, for the code scanner.
+    /// The local projects the user linked to `key`, for the code scanner. A link an AI made (`link_project`) only helps
+    /// sessions find the knowledge: the app reads code only in folders the user chose.
     static func linkedProjects(of key: DatabaseKey, store: KnowledgeStore, home: URL) throws -> [CodeScanner.Project] {
         let index = try store.index()
-        let linked = Set(index.links.filter { $0.database == key.fileID }.map(\.project))
+        let linked = Set(index.links.filter { $0.database == key.fileID && $0.addedBy == "user" }.map(\.project))
         return index.projects.filter { linked.contains($0.id) }.map { (project: KnowledgeIndex.Project) -> CodeScanner.Project in
             CodeScanner.Project(id: project.id, root: URL(fileURLWithPath: KnowledgeMCP.expand(project.path, home: home), isDirectory: true))
         }
