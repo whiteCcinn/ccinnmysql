@@ -179,7 +179,7 @@ private struct BackupPassphraseView: View {
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text("Enter the passphrase it was made with: it opens the passwords inside and proves the file was not changed since. Without it everything except the passwords can still be imported.")
+                Text(explanation)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 SecureField("Passphrase", text: $center.importPassphrase)
@@ -202,6 +202,15 @@ private struct BackupPassphraseView: View {
         }
         .padding(24)
         .onAppear { focused = true }
+    }
+
+    /// A CcinnMysql 1.5 backup's passphrase opens its passwords but cannot prove the file unchanged.
+    private var explanation: String {
+        let isLegacy: Bool = (center.header?.formatVersion ?? BackupHeader.currentFormatVersion) < BackupHeader.currentFormatVersion
+        let opens = isLegacy
+            ? "Enter the passphrase it was made with in CcinnMysql 1.5: it opens the passwords inside. A backup in this older format cannot prove it was not changed since, so check the preview carefully."
+            : "Enter the passphrase it was made with: it opens the passwords inside and proves the file was not changed since."
+        return opens + " Without it everything except the passwords can still be imported."
     }
 }
 

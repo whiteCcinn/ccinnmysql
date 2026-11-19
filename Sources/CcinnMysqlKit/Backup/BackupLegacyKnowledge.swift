@@ -108,10 +108,12 @@ enum BackupLegacyKnowledge {
         mutating func link(_ projects: [Project], to key: DatabaseKey, sourceHome: String, warnings: inout [BackupWarning]) -> [String: String] {
             var byName: [String: String] = [:]
             for project in projects {
-                // 1.5 stored absolute, standardized paths; anything else is not resolved against this process's folder.
+                // 1.5 stored absolute, standardized paths; anything else is not resolved against this process's folder. As
+                // when linking a folder today, neither `/` nor the home folder itself is a project.
                 let isAbsolute: Bool = project.path.hasPrefix("/") && BackupPaths.isAcceptable(project.path)
                 let stored = BackupPaths.collapsingHome(project.path, home: sourceHome)
-                guard isAbsolute, BackupPaths.isAcceptable(stored) else {
+                let isFolder: Bool = stored != "/" && stored != "~"
+                guard isAbsolute, isFolder, BackupPaths.isAcceptable(stored) else {
                     warnings.append(.legacyKnowledgeNotConverted("the linked folder “\(label(project.path))”, whose path cannot be used."))
                     continue
                 }

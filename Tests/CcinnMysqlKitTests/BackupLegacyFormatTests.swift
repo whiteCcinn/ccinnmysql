@@ -307,7 +307,8 @@ struct BackupLegacyKnowledgeTests {
         var adx = L.KnowledgeBase(connectionID: profile.id, database: "adx")
         adx.projects = [L.LinkedProject(name: "adx", path: "/Users/old/code/adx"), L.LinkedProject(name: "tools", path: "/opt/tools")]
         var ssp = L.KnowledgeBase(connectionID: profile.id, database: "ssp")
-        ssp.projects = [L.LinkedProject(name: "adx", path: "/Users/old/code/adx"), L.LinkedProject(name: "bad", path: "relative/path")]
+        ssp.projects = [L.LinkedProject(name: "adx", path: "/Users/old/code/adx"), L.LinkedProject(name: "bad", path: "relative/path"),
+                        L.LinkedProject(name: "everything", path: "/"), L.LinkedProject(name: "home", path: "/Users/old")]
         let bundle = try convert([adx, ssp])
         let knowledge = try #require(bundle.payload.knowledge)
         #expect(knowledge.index.projects.map(\.path) == ["~/code/adx", "/opt/tools"], "one project per folder, ~/… under the old home")
@@ -316,10 +317,11 @@ struct BackupLegacyKnowledgeTests {
         #expect(knowledge.index.databases.map(\.key.database) == ["adx", "ssp"], "listed for their links, though they hold no notes")
         #expect(knowledge.index.clusters.map(\.key) == [key.cluster])
         #expect(knowledge.databases.isEmpty, "nothing to write for databases without notes")
-        #expect(bundle.warnings.contains { (warning: BackupWarning) -> Bool in
-            if case let .legacyKnowledgeNotConverted(detail) = warning { return detail.contains("relative/path") }
-            return false
-        })
+        let unusable = bundle.warnings.compactMap { (warning: BackupWarning) -> String? in
+            if case let .legacyKnowledgeNotConverted(detail) = warning, detail.contains("linked folder") { return detail }
+            return nil
+        }
+        #expect(unusable.count == 3, "a relative path, / and the home folder itself are no project folders")
     }
 
     @Test func factsUnknownConnectionsAndNewerFormatsAreReported() throws {
