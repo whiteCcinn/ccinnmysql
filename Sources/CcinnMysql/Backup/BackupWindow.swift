@@ -345,19 +345,19 @@ private struct BackupPreview: View {
     }
 
     private static func count(_ value: Int, _ noun: String) -> String {
-        value == 1 ? "1 \(noun)" : "\(value) \(noun)s"
+        Format.counted(value, noun)
     }
 
     private static func describe(_ changes: BackupKnowledgeChanges) -> String {
         if changes.isEmpty { return "" }
         var parts: [String] = []
-        func add(_ count: Int, _ noun: String) { if count > 0 { parts.append("\(count) \(noun)") } }
-        add(changes.tablesAdded + changes.tablesUpdated, "tables")
-        add(changes.relationshipsAdded + changes.relationshipsUpdated, "relationships")
-        add(changes.notesAdded + changes.notesUpdated, "notes")
-        add(changes.termsAdded + changes.termsUpdated, "terms")
-        add(changes.areasAdded + changes.areasUpdated, "areas")
-        add(changes.removed, "removed")
+        func add(_ count: Int, _ noun: String) { if count > 0 { parts.append(Format.counted(count, noun)) } }
+        add(changes.tablesAdded + changes.tablesUpdated, "table")
+        add(changes.relationshipsAdded + changes.relationshipsUpdated, "relationship")
+        add(changes.notesAdded + changes.notesUpdated, "note")
+        add(changes.termsAdded + changes.termsUpdated, "term")
+        add(changes.areasAdded + changes.areasUpdated, "area")
+        if changes.removed > 0 { parts.append("\(Format.count(changes.removed)) removed") }
         return parts.joined(separator: " · ")
     }
 
@@ -435,7 +435,7 @@ private struct BackupProfileRow: View {
             if !item.flags.isEmpty {
                 BackupFlowLayout(spacing: 6) {
                     ForEach(BackupProfileItem.Flag.allCases.filter { item.flags.contains($0) }, id: \.self) { flag in
-                        Badge(text: Self.label(flag), color: Self.isSecurity(flag) ? .orange : .secondary, systemImage: Self.symbol(flag))
+                        Badge(text: Self.label(flag, isNew: item.status == .new), color: Self.isSecurity(flag) ? .orange : .secondary, systemImage: Self.symbol(flag))
                     }
                 }
             }
@@ -471,9 +471,10 @@ private struct BackupProfileRow: View {
         return suggested ? text + " (suggested)" : text
     }
 
-    private static func label(_ flag: BackupProfileItem.Flag) -> String {
+    /// A new connection has nothing to differ from: its AI access is what it brings.
+    private static func label(_ flag: BackupProfileItem.Flag, isNew: Bool) -> String {
         switch flag {
-        case .aiAccessChanged: "AI access differs"
+        case .aiAccessChanged: isNew ? "Gives AI access" : "AI access differs"
         case .privilegedOptInReset: "Privileged-account AI opt-in turned off"
         case .endpointChanged: "Different server, user or SSH route"
         case .tlsWeakened: "Weaker TLS"
