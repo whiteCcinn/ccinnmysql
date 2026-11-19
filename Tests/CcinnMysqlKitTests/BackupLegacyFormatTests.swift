@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import MySQLKit
 import Testing
@@ -362,5 +363,85 @@ struct BackupLegacyKnowledgeTests {
         base.notes.tables["bad\u{7}table"] = L.TableNote(summary: "dropped", author: "user", updatedAt: F.date(1))
         let bundle = try convert([base])
         #expect(try onlyDatabase(bundle).notes.map(\.text) == ["escaped\nsecond line"])
+    }
+}
+
+// MARK: - One 1.5 knowledge file, for an import from disk
+
+@Suite("CcinnMysql 1.5 knowledge files")
+struct LegacyKnowledgeConverterTests {
+    /// As 1.5's knowledge store wrote `Knowledge/<connection id>/<database>.json`.
+    private func file(_ base: L.KnowledgeBase) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return try encoder.encode(base)
+    }
+
+    private func temporaryDirectory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("ccinnmysql-legacy-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    @Test func aFileOnDiskConvertsWithItsFoldersUnderThisHome() throws {
+        let profile = F.profile(name: "prod", host: "db.prod")
+        var stored = L.KnowledgeBase(connectionID: profile.id, database: "adx")
+        stored.projects = [L.LinkedProject(name: "adx", path: "/Users/me/code/adx")]
+        stored.notes.tables["report"] = L.TableNote(summary: "revenue in USD", author: "user", updatedAt: F.date(1),
+                                                    evidence: [L.Evidence(kind: "code", project: "adx", path: "src/Report.swift", line: 7)])
+        stored.snapshot = L.Snapshot()
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("adx.json")
+        try file(stored).write(to: url)
+
+        let base = try LegacyKnowledgeConverter.read(contentsOf: url)
+        #expect(base.connectionID == profile.id && base.database == "adx" && !base.isNewerFormat)
+        let converted = LegacyKnowledgeConverter.convert(base, profile: profile, home: "/Users/me")
+        let key = DatabaseKey(cluster: ClusterKey(profile: profile), catalog: "def", database: "adx")
+        #expect(converted.knowledge.key == key)
+        #expect(converted.knowledge.notes.map(\.text) == ["revenue in USD"])
+        #expect(converted.projects.map(\.path) == ["~/code/adx"])
+        #expect(converted.links.map(\.database) == [key.fileID] && converted.links.map(\.project) == converted.projects.map(\.id))
+        let code = try #require(converted.knowledge.notes.first?.evidence.first)
+        #expect(code.source == .code && code.project == converted.projects.first?.id && code.path == "src/Report.swift" && code.line == 7)
+        #expect(converted.warnings == [LegacyKnowledgeConverter.factsNotConverted])
+        #expect(!LegacyKnowledgeConverter.isEmpty(converted.knowledge))
+
+        // The same knowledge from a 1.5 backup gets the same ids, so both imports merge.
+        let viaBackup = try BackupFormat.decode(try L.file(connections: [profile], knowledge: [stored], homeDirectory: "/Users/me"))
+        let fromBackup = try #require(viaBackup.payload.knowledge?.databases.first)
+        #expect(fromBackup.notes.map(\.id) == converted.knowledge.notes.map(\.id))
+        #expect(viaBackup.payload.knowledge?.index.projects.map(\.id) == converted.projects.map(\.id))
+    }
+
+    @Test func aNewerOrDamagedFileIsReportedNotGuessed() throws {
+        let profile = F.profile(name: "prod", host: "db.prod")
+        var newer = L.KnowledgeBase(connectionID: profile.id, database: "adx")
+        newer.formatVersion = 2
+        let base = try LegacyKnowledgeConverter.decode(try file(newer))
+        #expect(base.isNewerFormat)
+        let converted = LegacyKnowledgeConverter.convert(base, profile: profile, home: "/Users/me")
+        #expect(LegacyKnowledgeConverter.isEmpty(converted.knowledge) && converted.projects.isEmpty && converted.warnings.count == 1)
+        #expect(throws: LegacyKnowledgeConverter.Failure.self) { try LegacyKnowledgeConverter.decode(Data("{\"database\":1}".utf8)) }
+        #expect(throws: LegacyKnowledgeConverter.Failure.self) { try LegacyKnowledgeConverter.decode(Data("not json".utf8)) }
+    }
+
+    @Test func onlyABoundedRegularFileIsRead() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fifo = directory.appendingPathComponent("fifo.json")
+        #expect(mkfifo(fifo.path, 0o600) == 0)
+        #expect(throws: LegacyKnowledgeConverter.Failure.self, "a pipe nobody writes to would block a reader") {
+            try LegacyKnowledgeConverter.read(contentsOf: fifo)
+        }
+        #expect(throws: LegacyKnowledgeConverter.Failure.self) { try LegacyKnowledgeConverter.read(contentsOf: URL(fileURLWithPath: "/dev/zero")) }
+        let large = directory.appendingPathComponent("large.json")
+        #expect(FileManager.default.createFile(atPath: large.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: large)
+        try handle.truncate(atOffset: UInt64(LegacyKnowledgeConverter.maximumFileBytes) + 1)
+        try handle.close()
+        #expect(throws: LegacyKnowledgeConverter.Failure.tooLarge) { try LegacyKnowledgeConverter.read(contentsOf: large) }
+        #expect(throws: LegacyKnowledgeConverter.Failure.self) { try LegacyKnowledgeConverter.read(contentsOf: directory) }
     }
 }

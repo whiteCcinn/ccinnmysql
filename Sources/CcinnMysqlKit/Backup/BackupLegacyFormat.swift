@@ -139,7 +139,7 @@ enum BackupLegacyFormat {
         var homeDirectory: String
         var connections: [ConnectionProfile]
         var secrets: LegacySealedSecrets?
-        var knowledge: [BackupLegacyKnowledge.Base]
+        var knowledge: [LegacyKnowledgeBase]
 
         enum CodingKeys: String, CodingKey {
             case format, version, createdAt, appVersion, homeDirectory, connections, secrets, knowledge
@@ -154,7 +154,7 @@ enum BackupLegacyFormat {
             homeDirectory = try container.decodeIfPresent(String.self, forKey: .homeDirectory) ?? ""
             connections = try container.decode([ConnectionProfile].self, forKey: .connections)
             secrets = try container.decodeIfPresent(LegacySealedSecrets.self, forKey: .secrets)
-            knowledge = try container.decodeIfPresent([BackupLegacyKnowledge.Base].self, forKey: .knowledge) ?? []
+            knowledge = try container.decodeIfPresent([LegacyKnowledgeBase].self, forKey: .knowledge) ?? []
         }
     }
 
