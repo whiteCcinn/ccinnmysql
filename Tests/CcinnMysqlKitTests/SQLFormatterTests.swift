@@ -506,18 +506,17 @@ struct SQLFormatterTests {
         #expect(format("select a -- note   \nfrom t") == "SELECT a -- note   \nFROM t")
     }
 
-    @Test func aMegabyteScriptFormatsQuickly() async throws {
+    @Test func aMegabyteScriptFormatsInLinearTime() async throws {
         let statement = "select o.id, sum(o.amount) total, case when o.x > 1 then 'a' when o.x < 0 then 'b' else 'c' end k "
             + "from shop.orders o left join shop.customers c on o.customer_id = c.id and c.city in ('KL', 'PG') "
             + "where o.created_at between '2024-01-01' and '2024-12-31' and o.status = 'paid' group by o.id, k order by total desc limit 10;\n"
+        // Time grows linearly with the script, from 32 KB to 256 KB. A 20 s wall-clock bound left a busy CI runner too little room.
+        let growth = await measureGrowth(size: 32_768 / statement.utf8.count + 1, make: { String(repeating: statement, count: $0) },
+                                         run: { SQLFormatter.format($0) })
+        #expect(growth.isLinear, "\(growth)")
         let script = String(repeating: statement, count: 1_048_576 / statement.utf8.count + 1)
-        let (result, elapsed) = await onDedicatedThread { () -> (String?, Duration) in
-            let started = ContinuousClock.now
-            let result = SQLFormatter.format(script)
-            return (result, ContinuousClock.now - started)
-        }
+        let result = await onDedicatedThread { SQLFormatter.format(script) }
         let formatted = try #require(result)
-        #expect(elapsed < .seconds(20), "debug build bound; release is far faster: \(elapsed)")
         #expect(formatted.count > script.count)
     }
 
@@ -975,28 +974,18 @@ struct SQLFormatterTests {
     }
 
     // Look-aheads and nesting stay linear: unclosed parentheses, nested CASEs and an EXPLAIN prefix before thousands of
-    // parentheses. The bound is for debug builds; `swift test -c release` checks the release bound.
+    // parentheses. Checked as growth from n to 8n (up to 12,000 levels), which a busy CI runner cannot fail; a 10 s
+    // wall-clock bound did, for work that takes under a second.
     @Test func pathologicalNestingStaysLinear() async throws {
-        #if DEBUG
-        let bound = Duration.seconds(10)
-        #else
-        let bound = Duration.milliseconds(500)
-        #endif
-        let inputs = [
-            String(repeating: "select (", count: 50_000),
-            "select " + String(repeating: "case when a then ", count: 20_000) + "1" + String(repeating: " end", count: 20_000),
-            "explain " + String(repeating: "(", count: 20_000) + String(repeating: " select 1", count: 20_000),
-            "select " + String(repeating: "f(a, ", count: 30_000) + "1" + String(repeating: ")", count: 30_000) + " from t",
+        let shapes: [(name: String, size: Int, make: @Sendable (Int) -> String)] = [
+            ("unclosed parentheses", 1_500, { String(repeating: "select (", count: $0) }),
+            ("nested CASE", 625, { "select " + String(repeating: "case when a then ", count: $0) + "1" + String(repeating: " end", count: $0) }),
+            ("EXPLAIN before parentheses", 625, { "explain " + String(repeating: "(", count: $0) + String(repeating: " select 1", count: $0) }),
+            ("nested calls", 940, { "select " + String(repeating: "f(a, ", count: $0) + "1" + String(repeating: ")", count: $0) + " from t" }),
         ]
-        let timings = await onDedicatedThread { () -> [(String, Duration)] in
-            inputs.map { input in
-                let started = ContinuousClock.now
-                _ = SQLFormatter.format(input)
-                return (String(input.prefix(30)), ContinuousClock.now - started)
-            }
-        }
-        for (input, elapsed) in timings {
-            #expect(elapsed < bound, "\(input)…: \(elapsed)")
+        for shape in shapes {
+            let growth = await measureGrowth(size: shape.size, make: shape.make, run: { SQLFormatter.format($0) })
+            #expect(growth.isLinear, "\(shape.name): \(growth)")
         }
     }
 

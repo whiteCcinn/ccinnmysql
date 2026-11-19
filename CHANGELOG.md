@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-11-19
+
+### Fixed
+
+- **Knowledge tab, Relationships:** From and To show `table(column)` labels in full at the default window size; 1.5.0 cut them off on every row. A label that still doesn't fit loses its middle, so the column names stay readable, and shows in full on hover.
+- **Counts in the singular:** "1 view", "1 relationship", "1 file", "≈ 1 row" in the Knowledge tab, the exported Markdown and the backup screen. 1.5.0 wrote "1 views".
+- **CI:** the checks that the SQL formatter stays linear now measure how its time grows when the input is 8 times larger, instead of a fixed time limit. A busy CI runner no longer fails them; a quadratic slowdown still does.
+
 ## [1.5.0] - 2026-11-19
 
 ### Added

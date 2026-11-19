@@ -133,7 +133,9 @@ private struct KnowledgeHeader: View {
         }
         let tables = graph.tables.values.filter { $0.kind == .table }.count
         let declared = graph.edges.filter(\.relationship.isDeclared).count
-        return Text("Built ") + Text(build.builtAt, style: .relative) + Text(" ago · \(tables) tables · \(graph.tables.count - tables) views · \(graph.edges.count) relationships (\(declared) declared) · \(knowledge.notes.count) notes")
+        let counts = KnowledgeModel.summaryCounts(tables: tables, views: graph.tables.count - tables, relationships: graph.edges.count,
+                                                  declared: declared, notes: knowledge.notes.count)
+        return Text("Built ") + Text(build.builtAt, style: .relative) + Text(" ago · " + counts)
     }
 }
 
@@ -237,7 +239,7 @@ private struct ProjectRow: View {
                     .help(project.path)
                 HStack(spacing: 4) {
                     if let scan {
-                        Text("\(Format.count(scan.files)) files" + (scan.commit.map { " · \($0.prefix(7))" } ?? ""))
+                        Text(Format.counted(scan.files, "file") + (scan.commit.map { " · \($0.prefix(7))" } ?? ""))
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                         if scan.truncated { Badge(text: "limit reached", color: .orange) }
@@ -305,7 +307,8 @@ private struct KnowledgeStats: View {
             let orphans = knowledge.orphanedNotes
             if !orphans.isEmpty {
                 Divider()
-                Text("\(orphans.count) note(s) refer to tables or columns that no longer exist.").font(.caption).foregroundStyle(.secondary)
+                Text(orphans.count == 1 ? "1 note refers to a table or column that no longer exists."
+                                        : "\(Format.count(orphans.count)) notes refer to tables or columns that no longer exist.").font(.caption).foregroundStyle(.secondary)
                     .help(orphans.joined(separator: "\n"))
                 Button("Delete Outdated Notes", action: deleteOrphans).controlSize(.small)
             }
@@ -372,12 +375,15 @@ private struct RelationshipsSection: View {
 
     private var table: some View {
         Table(model.visibleEdges, selection: $selection) {
+            // From and To carry the meaning: `table(column)` labels of up to 26 characters fit at the default window size.
             TableColumn("From") { (edge: KnowledgeGraph.Edge) in endText(edge.relationship.from.label) }
+                .width(min: 120, ideal: 190)
             TableColumn("To") { (edge: KnowledgeGraph.Edge) in endText(edge.relationship.to.label) }
+                .width(min: 100, ideal: 170)
             TableColumn("Kind") { (edge: KnowledgeGraph.Edge) in Text(Self.cardinality(edge.cardinality)).font(.caption) }
                 .width(min: 70, ideal: 90, max: 110)
             TableColumn("Sources") { (edge: KnowledgeGraph.Edge) in sourcesView(edge) }
-                .width(min: 120, ideal: 250)
+                .width(min: 100, ideal: 180)
             TableColumn("Confidence") { (edge: KnowledgeGraph.Edge) in Text(Self.percent(edge.confidence)).monospacedDigit() }
                 .width(min: 70, ideal: 80, max: 90)
             TableColumn("Verdict") { (edge: KnowledgeGraph.Edge) in verdictView(edge) }
@@ -395,8 +401,9 @@ private struct RelationshipsSection: View {
         }
     }
 
+    /// A label too long for its column loses its middle, so the table name and the column names at the end stay readable.
     private func endText(_ label: String) -> some View {
-        Text(label).font(Theme.monospacedSmall).help(label)
+        Text(label).font(Theme.monospacedSmall).lineLimit(1).truncationMode(.middle).help(label)
     }
 
     private func sourcesView(_ edge: KnowledgeGraph.Edge) -> some View {
@@ -559,7 +566,7 @@ private struct TableDetailPane: View {
                     Badge(text: context.table.kind.rawValue)
                     if let engine = context.table.engine { EngineBadge(engine: engine) }
                     Spacer()
-                    if let rows = context.table.rowsEstimate { Text("≈ \(Format.count(Int(clamping: rows))) rows").foregroundStyle(.secondary) }
+                    if let rows = context.table.rowsEstimate { Text("≈ " + Format.counted(Int(clamping: rows), "row")).foregroundStyle(.secondary) }
                 }
                 if let comment = context.table.comment { Text(comment).foregroundStyle(.secondary).textSelection(.enabled) }
                 noteEditor

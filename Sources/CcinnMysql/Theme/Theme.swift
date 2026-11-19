@@ -148,6 +148,11 @@ enum Format {
 
     static func count(_ value: Int) -> String { value.formatted(.number) }
 
+    /// "1 file", "1,024 files": the count with digit grouping and its singular or plural noun.
+    static func counted(_ value: Int, _ singular: String, plural: String? = nil) -> String {
+        "\(count(value)) \(Plural.noun(value, singular, plural: plural))"
+    }
+
     static func duration(milliseconds: Double) -> String {
         guard milliseconds.isFinite else { return "—" }
         if milliseconds < 1 { return "<1 ms" }

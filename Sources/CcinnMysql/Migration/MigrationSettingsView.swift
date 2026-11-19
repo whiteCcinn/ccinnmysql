@@ -51,7 +51,7 @@ struct MigrationSettingsView: View {
 
     private var exportSection: some View {
         Section("Export") {
-            Text("\(store.profiles.count) saved connection\(store.profiles.count == 1 ? "" : "s")").foregroundStyle(.secondary)
+            Text(Format.counted(store.profiles.count, "saved connection")).foregroundStyle(.secondary)
             Toggle("Include knowledge bases (relationships, notes, linked folders)", isOn: $includeKnowledge)
             Toggle("Include passwords, encrypted with a passphrase", isOn: $includePasswords)
             if includePasswords {
@@ -103,7 +103,7 @@ struct MigrationSettingsView: View {
             case let .success((connections, bases, warnings)):
                 passphrase = ""
                 repeated = ""
-                exportResult = ("Exported \(connections) connection\(connections == 1 ? "" : "s") and \(bases) knowledge base\(bases == 1 ? "" : "s") to \(url.lastPathComponent)."
+                exportResult = ("Exported \(Format.counted(connections, "connection")) and \(Format.counted(bases, "knowledge base")) to \(url.lastPathComponent)."
                     + (warnings.isEmpty ? "" : "\n" + warnings.joined(separator: "\n")), false)
             case let .failure(error):
                 exportResult = ("Export failed: \(error.localizedDescription)", true)
@@ -120,7 +120,7 @@ struct MigrationSettingsView: View {
                 if let backupURL { Text(backupURL.lastPathComponent).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle) }
             }
             if let backup {
-                Text("Made \(backup.createdAt.formatted(date: .abbreviated, time: .shortened)) by CcinnMysql \(backup.appVersion): \(backup.connections.count) connection\(backup.connections.count == 1 ? "" : "s"), \(backup.knowledge.count) knowledge base\(backup.knowledge.count == 1 ? "" : "s")\(backup.secrets == nil ? ", no passwords" : ", encrypted passwords").")
+                Text("Made \(backup.createdAt.formatted(date: .abbreviated, time: .shortened)) by CcinnMysql \(backup.appVersion): \(Format.counted(backup.connections.count, "connection")), \(Format.counted(backup.knowledge.count, "knowledge base"))\(backup.secrets == nil ? ", no passwords" : ", encrypted passwords").")
                     .font(.callout)
                 if backup.secrets != nil {
                     SecureField("Passphrase (leave empty to import without passwords)", text: $importPassphrase)
@@ -197,7 +197,7 @@ private struct ImportReportView: View {
             line("Added", report.added)
             line("Replaced", report.updated)
             line("Kept (already here)", report.skipped)
-            if report.secretsRestored > 0 { Text("Passwords restored for \(report.secretsRestored) connection\(report.secretsRestored == 1 ? "" : "s").").font(.caption) }
+            if report.secretsRestored > 0 { Text("Passwords restored for \(Format.counted(report.secretsRestored, "connection")).").font(.caption) }
             if report.secretsSkipped { Text("Passwords were not imported (no passphrase).").font(.caption).foregroundStyle(.orange) }
             line("Knowledge bases created", report.knowledgeCreated)
             line("Knowledge bases merged", report.knowledgeMerged)

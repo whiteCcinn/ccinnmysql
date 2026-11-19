@@ -137,7 +137,7 @@ final class KnowledgeModel {
             do {
                 let summary = try await builder.build(key, source: source, scanCode: scanCode, progress: progress)
                 finishBuild()
-                var parts = ["\(summary.tables) tables", "\(summary.totalRelationships) relationships"]
+                var parts = [Format.counted(summary.tables, "table"), Format.counted(summary.totalRelationships, "relationship")]
                 if let changes = summary.changes, !changes.isEmpty {
                     parts.append("\(changes.added.count) added, \(changes.removed.count) removed, \(changes.changed.count) changed")
                 }
@@ -167,7 +167,7 @@ final class KnowledgeModel {
             buildStatus = "Finding relationships…"
             buildFraction = nil
         case let .code(done, total):
-            buildStatus = "Scanning code: \(Format.count(done)) of \(Format.count(total)) files"
+            buildStatus = "Scanning code: \(Format.count(done)) of \(Format.counted(total, "file"))"
             buildFraction = total > 0 ? Double(done) / Double(total) : nil
         case .saving:
             buildStatus = "Saving…"
@@ -412,5 +412,12 @@ final class KnowledgeModel {
 
     static func describe(_ error: any Error) -> String {
         (error as? KnowledgeError)?.message ?? (error as? MySQLError)?.message ?? error.localizedDescription
+    }
+
+    /// The header's counts: "11 tables · 1 view · 12 relationships (2 declared) · 1 note".
+    nonisolated static func summaryCounts(tables: Int, views: Int, relationships: Int, declared: Int, notes: Int) -> String {
+        [Format.counted(tables, "table"), Format.counted(views, "view"),
+         Format.counted(relationships, "relationship") + " (\(Format.count(declared)) declared)", Format.counted(notes, "note")]
+            .joined(separator: " · ")
     }
 }

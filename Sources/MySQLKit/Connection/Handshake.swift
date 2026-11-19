@@ -83,7 +83,7 @@ enum Handshake {
     }
 
     static func attributes(_ configuration: ConnectionConfiguration) -> [(String, String)] {
-        [("_client_name", String(configuration.applicationName.prefix(64))), ("_client_version", "1.5.0"), ("_os", "macOS"),
+        [("_client_name", String(configuration.applicationName.prefix(64))), ("_client_version", "1.5.1"), ("_os", "macOS"),
          ("_pid", String(ProcessInfo.processInfo.processIdentifier)), ("program_name", String(configuration.applicationName.prefix(64)))]
     }
 }

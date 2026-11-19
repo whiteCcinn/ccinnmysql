@@ -420,5 +420,18 @@ struct KnowledgeRenderingTests {
         }
         #expect(!markdown.contains(key.connectionID.uuidString))
         #expect(!markdown.contains("/private/") && !markdown.contains("/var/folders"), "no local paths")
+        #expect(markdown.contains(": 6 tables, 1 view, "), "counts")
+    }
+
+    // README screenshots showed "1 views"; the export said "1 tables, 1 views" the same way.
+    @Test func markdownCountsUseTheSingularForOne() async throws {
+        let bed = KnowledgeFixture.Testbed()
+        let schema = SchemaFacts(tables: [table("nodes", [col("id"), col("parent_id", nullable: true)]),
+                                          table("v_roots", [col("id")], pk: [], kind: .view)],
+                                 definitions: [], serverVersion: "8.4.3")
+        _ = try await KnowledgeBuilder(store: bed.store).build(bed.key, source: FakeSchemaSource(schema: schema))
+        let kb = try #require(try bed.store.load(bed.key))
+        let markdown = KnowledgeMarkdown.render(kb, graph: KnowledgeGraph(kb))
+        #expect(markdown.contains(": 1 table, 1 view, 1 relationship."), "\(markdown.prefix(400))")
     }
 }
