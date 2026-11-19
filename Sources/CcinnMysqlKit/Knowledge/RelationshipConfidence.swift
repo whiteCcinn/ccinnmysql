@@ -7,7 +7,7 @@ import Foundation
 ///   grain-only joins at 35 unless declared; shared keys at 30 while names are their only evidence.
 ///
 /// - Each source has a confidence: user 100, declared 95 (100 for an enforced foreign key), lineage 100, definition 85, history
-///   `min(90, 55 + 10·log2(distinct statements))`, code 80 per evidence, ai ≤ 50, naming 30–70.
+///   `min(90, 55 + 10·log2(distinct statements))`, code 80 per evidence, ai ≤ 50, naming 30–70, scan 60.
 /// - Sources combine by noisy-OR, `1 − Π(1 − cᵢ)`. One source counts once (its best evidence), except `code`, where
 ///   every pointer into a repository is a witness of its own.
 /// - Rejections by anyone but the user lower the result the same way: `support × (1 − Π(1 − rejectᵢ))`.
@@ -78,6 +78,8 @@ public enum RelationshipConfidence {
         case .history: value = historyConfidence(statements: evidence.statements ?? 1)
         case .ai: value = min(evidence.score ?? aiCap, aiCap)
         case .naming: value = min(evidence.score ?? 30, namingCap)
+        // Pattern-matched in source files: weaker than code an AI read and pointed at.
+        case .scan: value = 60
         }
         return max(0, min(100, value))
     }

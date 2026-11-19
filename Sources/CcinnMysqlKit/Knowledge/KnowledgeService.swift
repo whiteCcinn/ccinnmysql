@@ -18,15 +18,22 @@ public enum KnowledgeService {
 
     // MARK: Refresh
 
-    /// Extracts the database, infers machine relationships from this extraction's tables and the history, and saves the
-    /// merged knowledge under the lock.
+    /// Extracts the database, infers machine relationships from this extraction's tables, the history and the code of
+    /// the projects linked to it (`scanner`), and saves the merged knowledge under the lock.
     public static func refresh(_ key: DatabaseKey, source: some KnowledgeSchemaSource, store: KnowledgeStore, history: [QueryHistoryEntry],
-                               infer: KnowledgeToolSettings.Inference, now: Date) async throws -> KnowledgeRefresher.Report {
+                               infer: KnowledgeToolSettings.Inference, now: Date, scanner: CodeScanner? = CodeScanner(),
+                               home: URL = FileManager.default.homeDirectoryForCurrentUser) async throws -> KnowledgeRefresher.Report {
         let schema = try await KnowledgeExtractor.extract(database: key.database, from: source)
         var preview = try store.database(key) ?? DatabaseKnowledge(key: key)
         var scratch = KnowledgeRefresher.Report()
         KnowledgeRefresher.updateTables(schema, in: &preview, now: now, report: &scratch)
-        let machine = infer(KnowledgeInferenceInput(schema: schema, knowledge: preview, history: history, now: now))
+        var machine = infer(KnowledgeInferenceInput(schema: schema, knowledge: preview, history: history, now: now))
+        if let scanner {
+            let projects = try linkedProjects(of: key, store: store, home: home)
+            if !projects.isEmpty {
+                machine += try await scanner.scan(projects: projects, tables: preview.tables, database: key.database, now: now).relationships
+            }
+        }
         let report = try store.updateDatabase(key) { knowledge in
             KnowledgeRefresher.apply(schema, machineRelationships: machine, to: &knowledge, now: now)
         }
@@ -36,6 +43,15 @@ public enum KnowledgeService {
             }
         }
         return report
+    }
+
+    /// The local projects linked to `key`, for the code scanner.
+    static func linkedProjects(of key: DatabaseKey, store: KnowledgeStore, home: URL) throws -> [CodeScanner.Project] {
+        let index = try store.index()
+        let linked = Set(index.links.filter { $0.database == key.fileID }.map(\.project))
+        return index.projects.filter { linked.contains($0.id) }.map { (project: KnowledgeIndex.Project) -> CodeScanner.Project in
+            CodeScanner.Project(id: project.id, root: URL(fileURLWithPath: KnowledgeMCP.expand(project.path, home: home), isDirectory: true))
+        }
     }
 
     /// Editor history of every saved profile that reaches the cluster, directly or through an alias the user declared.

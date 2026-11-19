@@ -43,7 +43,7 @@ public enum KnowledgeRefresher {
         public init() {}
     }
 
-    static let machineSources: Set<Evidence.Source> = [.declared, .lineage, .definition, .history, .naming]
+    static let machineSources: Set<Evidence.Source> = [.declared, .lineage, .definition, .history, .naming, .scan]
 
     /// Applies the extraction and the machine relationships inferred from it. Lineage relationships are derived here from
     /// the views' and materialized views' facts.

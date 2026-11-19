@@ -433,11 +433,11 @@ public struct Evidence: Codable, Sendable, Equatable {
     public enum Source: String, Codable, Sendable, CaseIterable {
         /// The user confirmed or rejected it in the app.
         case user
-        /// A `foreign_key_constraints` / `unique_constraints` table property.
+        /// A declared foreign key.
         case declared
-        /// A view or materialized view reads the table.
+        /// A view reads the table.
         case lineage
-        /// An equi-join inside a view or materialized view definition.
+        /// An equi-join inside a view, routine, trigger or event definition.
         case definition
         /// Equi-joins in successful statements of the editor history.
         case history
@@ -447,6 +447,8 @@ public struct Evidence: Codable, Sendable, Equatable {
         case ai
         /// Column and table names.
         case naming
+        /// The app's code scanner found the join in a linked project (path and line; recomputed on every refresh).
+        case scan
     }
 
     public enum Verdict: String, Codable, Sendable {
