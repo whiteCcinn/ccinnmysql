@@ -47,6 +47,11 @@ final class KnowledgeTabModel {
     var error: String?
     var diagramArea: String?
     var diagramText = ""
+    /// What came over from CcinnMysql 1.5, shown until dismissed.
+    var carriedOver: LegacyKnowledgeImport.Record?
+
+    /// Set once the user dismissed the 1.5 carry-over notice: it is shown in no tab again.
+    static let carriedOverDismissedKey = "knowledgeCarriedOverFrom15Dismissed"
 
     @ObservationIgnored private var watcher: (any DispatchSourceFileSystemObject)?
     @ObservationIgnored private var reloadTask: Task<Void, Never>?
@@ -81,10 +86,14 @@ final class KnowledgeTabModel {
     func load() async {
         let (store, key) = (store, key)
         do {
-            let (knowledge, index) = try await Task.detached(priority: .userInitiated) { () -> (DatabaseKnowledge?, KnowledgeIndex) in
-                (try store.database(key), try store.index())
+            let showsCarriedOver = !UserDefaults.standard.bool(forKey: Self.carriedOverDismissedKey)
+            let (knowledge, index, record) = try await Task.detached(priority: .userInitiated) {
+                () -> (DatabaseKnowledge?, KnowledgeIndex, LegacyKnowledgeImport.Record?) in
+                let record = showsCarriedOver ? LegacyKnowledgeImport.record(in: store) : nil
+                return (try store.database(key), try store.index(), record)
             }.value
             self.knowledge = knowledge
+            carriedOver = record?.isWorthShowing == true ? record : nil
             let links = index.links.filter { $0.database == key.fileID }
             let linked = Set(links.map(\.project))
             linkedByAI = Set(links.filter { $0.addedBy != "user" }.map(\.project))
@@ -127,6 +136,11 @@ final class KnowledgeTabModel {
         }
     }
 
+    func dismissCarriedOver() {
+        UserDefaults.standard.set(true, forKey: Self.carriedOverDismissedKey)
+        carriedOver = nil
+    }
+
     func refresh() async {
         guard !isRefreshing else { return }
         isRefreshing = true
@@ -135,7 +149,9 @@ final class KnowledgeTabModel {
             let report = try await refresher()
             lastReport = report
             await load()
-            showToast("Knowledge refreshed: \(report.tables.total) tables, \(report.relationships.added) new relationships", false)
+            let tables = Format.counted(report.tables.total, "table")
+            let added = Format.counted(report.relationships.added, "new relationship", plural: "new relationships")
+            showToast("Knowledge refreshed: \(tables), \(added)", false)
         } catch {
             showToast("Refresh failed: \(error.localizedDescription)", true)
         }

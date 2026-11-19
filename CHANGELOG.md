@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **Knowledge from 1.5 carries over on first launch:** table and column notes (with their value meanings), glossary terms, the relationships you or an AI added, your verdicts and linked folders, merged as a 1.5 backup's knowledge is merged. The Knowledge tab says once what came over and what did not; Refresh rebuilds the structure. It runs once and leaves the 1.5 files in place.
+
 ### Changed
 
 - **The knowledge base now follows the design shared by CcinnStarRocks and CcinnPsql**, so knowledge files, backups and the MCP tools have one shape across the ccinn apps:
@@ -13,7 +17,7 @@ All notable changes to this project are documented here. The format is based on
   - relationships carry their evidence and a confidence (0–100) computed from it: declared foreign keys are facts (100); joins in view, procedure, function, trigger and event definitions, in the editor's query history, in the code of the folders you link (`scan`, with file and line), in code an AI cited, and in names are inferred; your Confirm or Reject always wins;
   - structure fingerprints mark notes and relationships stale when their table changes; notes, a glossary in any language, subject areas and Mermaid ER diagrams;
   - the Knowledge tab (toolbar **Knowledge**, or right-click a database → **Knowledge Base**) refreshes, reviews relationships, shows notes, glossary, diagrams and linked projects.
-- **MCP knowledge tools are renamed** to the shared set: `list_knowledge`, `knowledge_overview`, `search_knowledge`, `explain_table`, `find_join_path`, `er_diagram`, `refresh_knowledge`, and for writes `link_project`, `add_notes`, `add_relationships`, `define_terms`, `define_subject_area`, `remove_knowledge` (replacing `knowledge_status`, `knowledge_build`, `knowledge_search`, `knowledge_context`, `knowledge_join_path`, `knowledge_erd`, `knowledge_annotate`). Prompts `build_knowledge` and `answer_with_knowledge`. They pass the same privilege check as every tool and show only what the connection's account can see; writes need the connection's **AI may write knowledge** setting (Settings → MCP, on by default) and `mcp --no-knowledge-writes` turns them off for the whole server.
+- **MCP knowledge tools are renamed** to the shared set: `list_knowledge`, `knowledge_overview`, `search_knowledge`, `explain_table`, `find_join_path`, `er_diagram`, `refresh_knowledge`, and for writes `link_project`, `add_notes`, `add_relationships`, `define_terms`, `define_subject_area`, `remove_knowledge` (replacing `knowledge_status`, `knowledge_build`, `knowledge_search`, `knowledge_context`, `knowledge_join_path`, `knowledge_erd`, `knowledge_annotate`). Prompts `build_knowledge` and `answer_with_knowledge`. They pass the same privilege check as every tool and show only what the connection's account can see, down to the columns it may read; a refresh through an account that sees part of a database leaves the rest as it was. Writes need the connection's **AI may write knowledge** setting (Settings → MCP, on by default) and `mcp --no-knowledge-writes` turns them off for the whole server.
 - **Export and import** became **File ▸ Export / Import Settings and Knowledge…** (also Settings → General → Backup): settings and optionally query history are included too, the import previews every change with per-connection choices and highlights changes that weaken security, project folders can be remapped, and a snapshot saved first lets *Restore Pre-Import Snapshot* undo exactly what the import wrote. Backups made by 1.5 still import.
 - The MCP audit log records the AI client's name and, for knowledge writes, what changed.
 - Editing a connection's AI access or favourite now counts as a change of the connection, so the newer side wins an import conflict.

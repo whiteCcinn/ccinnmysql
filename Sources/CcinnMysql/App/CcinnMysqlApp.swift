@@ -76,6 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         SnapshotTool.scheduleIfRequested()
         UpdateController.shared.scheduleAutomaticCheck()
+        AppServices.shared.carryOverLegacyKnowledge()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }

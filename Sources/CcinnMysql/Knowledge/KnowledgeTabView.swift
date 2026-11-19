@@ -9,6 +9,10 @@ struct KnowledgeTabView: View {
         VStack(spacing: 0) {
             header
             Divider()
+            if let record = model.carriedOver {
+                carriedOverNotice(record)
+                Divider()
+            }
             Group {
                 if model.knowledge == nil {
                     ContentUnavailableView {
@@ -61,12 +65,45 @@ struct KnowledgeTabView: View {
         .padding(.vertical, 10)
     }
 
+    /// Once, after the first launch of this version: what came over from CcinnMysql 1.5 and what did not.
+    private func carriedOverNotice(_ record: LegacyKnowledgeImport.Record) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "arrow.down.doc").foregroundStyle(.tint)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(record.summary)
+                Text("Tables, keys and inferred relationships were not carried over: Refresh each database to rebuild them.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if !record.warnings.isEmpty {
+                    DisclosureGroup("Details") {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(Array(record.warnings.enumerated()), id: \.offset) { _, line in
+                                Text(line).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        .padding(.top, 2)
+                    }
+                    .font(.caption)
+                }
+            }
+            Spacer(minLength: 8)
+            Button("Dismiss") { model.dismissCarriedOver() }
+                .help("Hide this notice in every Knowledge tab")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(Color.accentColor.opacity(0.06))
+    }
+
     private var summary: String {
         guard let knowledge = model.knowledge else { return model.error ?? "Not built yet" }
         let live = knowledge.tables.filter { $0.state != .dropped }
         let changed = live.filter { $0.state == .changed }.count
         let refreshed = knowledge.refreshedAt.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "never"
-        return "\(live.count) tables\(changed > 0 ? ", \(changed) changed" : "") · \(knowledge.relationships.filter { $0.kind != .lineage }.count) relationships · \(knowledge.notes.count) notes · refreshed \(refreshed)"
+        let relationships = knowledge.relationships.filter { $0.kind != .lineage }.count
+        let tables = Format.counted(live.count, "table") + (changed > 0 ? ", \(Format.count(changed)) changed" : "")
+        return [tables, Format.counted(relationships, "relationship"), Format.counted(knowledge.notes.count, "note"), "refreshed \(refreshed)"]
+            .joined(separator: " · ")
     }
 
     // MARK: Sections

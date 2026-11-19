@@ -4,8 +4,10 @@ import Foundation
 /// `LegacyKnowledgeConverter` and gathered into one `BackupKnowledge`: one project per folder however many databases it
 /// was linked to, one database however many connections (users of the same server) had knowledge of it.
 enum BackupLegacyKnowledge {
-    static func convert(_ bases: [LegacyKnowledgeBase], profiles: [ConnectionProfile], sourceHome: String,
-                        warnings: inout [BackupWarning]) -> BackupKnowledge? {
+    /// `missingConnection` words the warning for a base whose connection is not among `profiles`, given the database's name.
+    static func convert(_ bases: [LegacyKnowledgeBase], profiles: [ConnectionProfile], sourceHome: String, warnings: inout [BackupWarning],
+                        missingConnection: (String) -> String = { "the knowledge of “\($0)” belongs to a connection not in the backup." })
+        -> BackupKnowledge? {
         guard !bases.isEmpty else { return nil }
         var profilesByID: [UUID: ConnectionProfile] = [:]
         for profile in profiles where profilesByID[profile.id] == nil { profilesByID[profile.id] = profile }
@@ -17,7 +19,7 @@ enum BackupLegacyKnowledge {
         for base in bases {
             guard let profile = profilesByID[base.connectionID] else {
                 let name = LegacyKnowledgeConverter.label(base.database)
-                warn(.legacyKnowledgeNotConverted("the knowledge of “\(name)” belongs to a connection not in the backup."))
+                warn(.legacyKnowledgeNotConverted(missingConnection(name)))
                 continue
             }
             let converted = LegacyKnowledgeConverter.convert(base, profile: profile, home: sourceHome)

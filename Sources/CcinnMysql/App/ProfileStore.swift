@@ -147,4 +147,20 @@ final class AppServices {
     let profiles = ProfileStore()
     let historyDirectory = QueryHistoryStore.defaultDirectory
     private(set) lazy var backup = BackupCenter(stores: .live(profiles: profiles, historyDirectory: historyDirectory))
+
+    /// Carries over, once and off the main thread, the knowledge CcinnMysql 1.5 left on disk (`LegacyKnowledgeImport`).
+    /// Open Knowledge tabs reload when it writes; a failure is retried at the next launch, and so is a launch whose saved
+    /// connections could not be read (their knowledge would look orphaned).
+    func carryOverLegacyKnowledge() {
+        guard profiles.lastError == nil else { return }
+        let profiles = profiles.profiles
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        Task.detached(priority: .utility) {
+            do {
+                _ = try LegacyKnowledgeImport.runIfNeeded(store: KnowledgeStore(), profiles: profiles, home: home)
+            } catch {
+                NSLog("CcinnMysql: knowledge from 1.5 was not carried over: %@", error.localizedDescription)
+            }
+        }
+    }
 }
