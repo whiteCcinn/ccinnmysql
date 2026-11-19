@@ -233,7 +233,19 @@ enum LaunchArguments {
                         }
                     }
                 }
-                if let database = value("--knowledge") { workspace.openKnowledge(database: database) }
+                if let database = value("--knowledge") {
+                    workspace.openKnowledge(database: database)
+                    if case let .knowledge(model)? = workspace.selectedTab?.kind {
+                        if let raw = value("--knowledge-section"),
+                           let section = KnowledgeTabModel.Section.allCases.first(where: { $0.rawValue.lowercased().hasPrefix(raw.lowercased()) }) {
+                            model.section = section
+                        }
+                        if let raw = value("--knowledge-filter"),
+                           let filter = KnowledgeTabModel.RelationshipFilter.allCases.first(where: { $0.rawValue.lowercased().hasPrefix(raw.lowercased()) }) {
+                            model.filter = filter
+                        }
+                    }
+                }
                 if let raw = value("--server"),
                    let section = ServerModel.Section.allCases.first(where: { $0.rawValue.lowercased().replacingOccurrences(of: " ", with: "").hasPrefix(raw.lowercased()) }) {
                     workspace.openServer(section: section)

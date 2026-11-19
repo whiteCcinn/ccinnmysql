@@ -39,7 +39,7 @@
 
 CcinnMysql 把这些答案放在一次点击之内。它是原生 SwiftUI/AppKit 应用，自带纯 Swift 实现的 MySQL 协议客户端——支持 TLS、`caching_sha2_password`、MariaDB `ed25519` 等。没有 Electron、没有 JDBC、没有捆绑运行时，也没有遥测。
 
-AI 助手面对同样的问题，掌握的上下文却更少：每个会话都要重新摸索库表结构，再去猜表之间怎么关联。CcinnMysql 的[知识库](#知识库让-ai-了解你的库表)按数据库记住这些——来源包括外键、命名约定、视图和存储例程定义，以及使用该数据库的代码——让 Claude Code、Codex 或 Cursor 从正确的关联出发。
+AI 助手面对同样的问题，掌握的上下文却更少：每个会话都要重新摸索库表结构，再去猜表之间怎么关联。CcinnMysql 的[知识库](#知识库让-ai-了解你的库表)按数据库记住这些——来源包括外键、视图和存储例程定义、查询历史、使用该数据库的代码以及命名约定——让 Claude Code、Codex 或 Cursor 从正确的关联出发。
 
 ## 功能
 
@@ -58,8 +58,8 @@ AI 助手面对同样的问题，掌握的上下文却更少：每个会话都�
 - **连接管理**：密码保存在钥匙串；TLS 模式（禁用、首选、必需、校验 CA、校验身份）支持自定义 CA 与客户端证书；通过系统 OpenSSH 建立 SSH 隧道（既不会使用、也不会成为 `~/.ssh/config` 中共享的 `ControlMaster` 连接）；可按连接要求在执行写操作前确认。
 - **多窗口**：每个窗口使用独立的连接，可以把不同的服务器并排打开，也可以为同一台服务器开两个视图。文件 ▸ 新建 CcinnMysql 窗口（File ▸ New CcinnMysql Window，⌘N）打开连接页面；**New Window with This Connection**（⇧⌘N，或工具栏的 New Window 按钮）沿用当前连接和正在使用的密码再开一个窗口，未保存的连接和没有存入钥匙串的密码同样适用；已保存的连接可以右键选择 **Open in New Window**。关闭窗口只会断开该窗口自己的连接。
 - **MCP 服务器**：让 Claude Code、Codex、Claude Desktop、Cursor 查询你授权的连接，默认只读。
-- **迁移到新 Mac**：把连接（可选择包含加密后的密码）、知识库和关联目录导出为一个文件，在新 Mac 上导入即可；路径会随主目录自动调整。
-- **知识库**：按数据库梳理所有表之间的关系，来源包括声明的外键、命名约定、视图与存储例程定义中的 JOIN，以及你关联的本地代码目录中的 JOIN。AI 助手直接从中查找相关表、连接路径和 ER 图，无需逐表探查，并把核实过的结论连同证据记录下来，供之后的会话复用。
+- **迁移到新 Mac**：「文件 ▸ Export Settings and Knowledge…」把连接、知识库及关联的项目、应用设置（可选查询历史）写进一个文件；密码只有在你用口令加密时才会写入。导入前先预览所有改动，导入后可以撤销。
+- **知识库**：按数据库梳理所有表之间的关系，来源包括声明的外键、视图／存储例程／触发器／事件定义中的 JOIN、你的查询历史、你关联的本地代码目录，以及命名约定。AI 助手直接从中查找相关表、连接路径和 ER 图，无需逐表探查，并把核实过的结论连同证据记录下来，供之后的会话复用。
 
 ## 兼容性
 
@@ -92,8 +92,8 @@ TLS 与 `mysql` 客户端一样，在服务器握手包之后通过 `SSLRequest`
 | ![Server](docs/screenshots/server-overview-mysql84.png) | ![Replication](docs/screenshots/replication-mysql84.png) |
 | **由查询生成的图表（MariaDB）** | **带 TLS 选项的连接** |
 | ![Chart](docs/screenshots/chart-mariadb114.png) | ![Connection](docs/screenshots/connection-tls.png) |
-| **知识库：一张表的 AI 注释、关联与代码引用** | **知识库：一张表的关系邻域** |
-| ![Knowledge base table](docs/screenshots/knowledge-table-mysql84.png) | ![Knowledge base diagram](docs/screenshots/knowledge-diagram-mysql84.png) |
+| **知识库：关系及其证据与置信度** | **知识库：主题域的 Mermaid ER 图** |
+| ![Knowledge base relationships](docs/screenshots/knowledge-relationships-mysql84.png) | ![Knowledge base diagram](docs/screenshots/knowledge-diagram-mysql84.png) |
 
 ## 安装
 
@@ -170,7 +170,8 @@ CcinnMysql 内置 **Model Context Protocol** 服务器。Claude Code、Codex、C
 | 库表 | `list_databases`、`list_tables`、`describe_table`、`get_indexes` |
 | 诊断 | `get_processlist`、`get_innodb_status`、`get_top_statements`、`get_replication_status` |
 | SQL | `run_query`、`explain_query`，以及 `execute_statement`（仅读写连接） |
-| 知识库 | `knowledge_status`、`knowledge_build`、`knowledge_search`、`knowledge_context`、`knowledge_join_path`、`knowledge_erd`、`knowledge_annotate`（见[知识库](#知识库让-ai-了解你的库表)） |
+| 知识库（读） | `list_knowledge`、`knowledge_overview`、`search_knowledge`、`explain_table`、`find_join_path`、`er_diagram`、`refresh_knowledge`（见[知识库](#知识库让-ai-了解你的库表)） |
+| 知识库（写） | `link_project`、`add_notes`、`add_relationships`、`define_terms`、`define_subject_area`、`remove_knowledge` |
 
 **安全机制**
 
@@ -203,64 +204,59 @@ GRANT PROCESS ON *.* TO 'ai_ro'@'%';                     -- 可选：进程列�
 
 ## 知识库：让 AI 了解你的库表
 
-没有知识库时，每个新的 AI 会话都要从零认识数据库：先一张张描述表结构，再去猜表之间怎么关联。生产环境的库大多很少声明外键，猜错是常事；而某个会话弄清楚的东西，会话结束就丢了。知识库按数据库把这些知识保存在你的 Mac 上，并通过 MCP 服务器提供给 AI 助手。
+没有知识库时，每个新的 AI 会话都要从零认识数据库：先一张张描述表结构，再去猜表之间怎么关联。生产环境的库大多很少声明外键，猜错是常事；而某个会话弄清楚的东西，会话结束就丢了。知识库按数据库把这些知识保存在你的 Mac 上，每个 AI 会话都通过 MCP 服务器复用它。
 
-**事实与判断分开保存。** 构建（Build）负责计算事实。事实可复现、不消耗 token，并且每条都标明来源和置信度：
+- **应用内不内置 AI。** CcinnMysql 只读取元数据（从不读取数据行）并做推断；打开了代码仓库的 AI 客户端负责读代码，再通过知识库工具把结论写回。
+- **每个数据库一份知识库**，以服务器地址（经 SSH 隧道时包含跳板机）为键，所有连到该服务器的连接共享，并可关联任意多个本地项目。在已关联项目中启动的会话用 `list_knowledge` 即可找到。
+- **每条关系都带证据**，置信度（0–100）由证据计算：
 
-| 来源 | 内容 | 置信度 |
-|---|---|---|
-| `declared` | 声明的外键 | 1.0 |
-| `view`、`routine` | 视图、存储过程、函数、触发器、事件定义中的 `JOIN … ON` / `USING` / 逗号连接等值条件 | 0.9 |
-| `code` | 你关联的代码目录中源文件里的同类条件（Go、Java、MyBatis XML、Python、TypeScript、`.sql` 等），带文件和行号 | 0.9 |
-| `naming` | 命名约定，例如 `user_id` → `users.id`、`userId`、共同前缀（`shop_orders.customer_id` → `shop_customers`）、复数形式、`parent_id` 自引用、与列同名的主键（`dsp_id`）；会校验类型，`*_id` 与 `*_type` 成对出现的多态列会跳过 | ≤ 0.85 |
+  | 来源 | 发现什么 | 置信度 |
+  |---|---|---|
+  | `declared` | 外键（InnoDB 强制执行） | 100：事实 |
+  | `definition` | 视图、存储过程、函数、触发器和事件定义中的 `JOIN … ON` / `USING` / 逗号连接等值条件 | 85 |
+  | `history` | 编辑器中执行成功的语句里的同类连接 | 55–90，随不同语句数增加 |
+  | `scan` | 你关联的代码目录中的源文件（Go、Java、MyBatis XML、Python、TypeScript、`.sql` 等）里的同类连接，带文件和行号 | 60 |
+  | `code` | AI 读过并引用的代码（路径、行号、符号） | 每条 80 |
+  | `naming` | `user_id` → `users.id`、前缀、复数、`parent_id`；带类型检查 | 30–70 |
 
-判断来自 AI 助手（`ai`）或你本人（`user`），包括：表的用途；列的说明及取值含义（如 `status 3 = 已暂停`）；术语表条目，可附带只读 SQL 示例；构建发现不了的关系；以及对推断关系的确认或否决。每条判断都记录作者和时间。新增关系必须附证据：关联项目中的文件，或用来核实的查询。被否决的关系不会再用于连接路径，重新构建后依然如此。AI 不能修改或删除你写的内容。
-
-**在应用中使用。** 点击工具栏中的 **Knowledge**，或右键数据库 → **Knowledge Base**：
-
-1. **Link Folder…** 关联使用该数据库的代码仓库。数量不限，同一个仓库也可以关联到多个数据库。
-2. **Build** 只读取元数据（不读取数据行），查找关系并扫描关联的目录。重新构建会保留所有笔记和判断，报告新增、删除和变更的表，并标出对应表或列已不存在的笔记。**Rebuild Schema Only** 跳过代码扫描。
-3. **Relationships**、**Tables**、**Notes**、**Diagram** 展示已知内容：
-   - 关系及其来源和置信度，右键菜单可确认或否决，证据可通过 **Reveal** 在访达中定位；
-   - 每张表的用途、带含义的列、关系，以及使用它的代码；
-   - 一张以某张表为中心的邻域关系图。
-4. **Export** → **Copy Mermaid ER Diagram**，或 **Export Markdown…**。导出的 Markdown 可以提交到代码仓库，团队成员和不支持 MCP 的 AI 工具都能读到同样的知识。文件中不包含主机、用户名或本地路径。
-
-**AI 助手如何使用。** MCP 服务器的说明会引导 AI 先调用 `knowledge_status`，然后使用以下工具，全部离线（不执行任何查询）：
-- `knowledge_search`：按表名、列名、注释、笔记、取值含义和术语表查找与问题相关的表，支持中文。
-- `knowledge_context`：返回列、笔记、带连接条件的关系，以及代码位置。
-- `knowledge_join_path`：给出两张表之间最可靠的连接路径，附现成的 `FROM … JOIN … ON`。
-- `knowledge_erd`：返回某个邻域的 Mermaid `erDiagram`。
-
-`knowledge_build` 用于创建或刷新知识库（只读元数据，账号检查与其他工具相同）。`knowledge_annotate` 用于记录 AI 核实过的结论。可以这样提问：
-
-- *"按广告主统计每日收入需要哪些表？它们怎么关联？"*
-- *"画出 `orders` 周边的 ER 图。"*
-- *"核实 `impressions.slot_id` 是否真的引用 `slots.id`，并把结论记录下来。"*
+  多个来源会合并；只有声明的外键和你确认过的才算事实，其余一律标注为*推断*。你在应用里的「确认 / 否定」始终优先，AI 永远无法修改或删除你写下、确认或否定的内容。
+- **新鲜度。** 每张表的结构都有指纹。表结构变化后，基于旧结构写下的说明和关系会标为过期，直到有人重新确认；已删除的表会保留，直到你手动清理。
+- **给答案，而不只是画图。** `find_join_path` 返回连接路径、`ON` 条件、SQL 骨架，并在行数会被放大时给出警告。`explain_table` 还给出说明、术语、使用这张表的代码以及主键等提示。`er_diagram` 按主题域、表清单、某张表的周边或名称前缀生成 Mermaid 图。
+- **在应用中。** 点工具栏的 **Knowledge**，或右键数据库 → **Knowledge Base**：刷新、审核推断出的关系（确认 / 否定）、说明与术语表、主题域的 ER 图（**Copy Mermaid**），以及关联的项目（**Link Project…**、重新定位、取消关联）。
+- **AI 助手如何使用。** MCP 服务器的说明会引导 AI 先用工作目录调用 `list_knowledge`，再用 `knowledge_overview`、`search_knowledge`、`explain_table` 和 `find_join_path`；知识库在首次使用时自动建立。提示词 `build_knowledge`（分析当前项目和一个数据库并记录结论）和 `answer_with_knowledge`（写 SQL 前先查知识库）引导 AI，Claude Code 中可用 `/mcp__ccinnmysql__build_knowledge` 调用。可以这样提问：
+  - *“按广告主统计每日收入需要哪些表？它们怎么关联？”*
+  - *“画出 `orders` 周边的 ER 图。”*
+  - *“检查 `impressions.slot_id` 是否真的引用 `slots.id`，并记录结果。”*
 
 **存储与隐私。**
-- 知识库保存在 `~/Library/Application Support/CcinnMysql/Knowledge/<连接>/<数据库>.json`，仅所有者可读写（文件 0600，目录 0700），每个数据库一个文件，供应用和所有 MCP 进程共用。其中只有元数据和笔记，没有任何数据行。
-- 从代码中只保留表名、列名、相对路径和行号，不保存代码文本。
-- 只扫描你在应用中关联的目录，AI 助手无法添加目录。以下内容会被跳过：符号链接、隐藏目录、依赖和构建目录（`node_modules`、`vendor`、`target` 等）、二进制文件和大于 1 MB 的文件。单次构建最多扫描 20,000 个文件或 256 MB，达到上限时会说明。
-- 多个 AI 客户端和应用可以同时更新同一个知识库：写入按文件串行进行。无法读取的文件，或由更新版本写入的文件，永远不会被覆盖（应用中的 **Reset…** 会把它移到一旁）。
-- 知识库归属于已保存的连接。快速连接需要先保存，知识库才能保留；AI 助手也只能看到开启了 AI 访问的连接。
+- 文件保存在 `~/Library/Application Support/CcinnMysql/Knowledge/`（仅本人可读写），应用与所有 `mcp` 进程可安全地同时使用。其中只有结构、带证据的关系（路径、行号、符号、字面量已替换的 SQL 摘要）和说明，没有任何数据行。
+- 从代码中只保留表名、列名、相对路径和行号，从不保存代码文本。
+- **只扫描你在应用中关联的目录。** AI 关联的项目（`link_project`）只用于帮后续会话找到知识库，应用不会读取其中的代码。符号链接、隐藏目录、依赖与构建目录（`node_modules`、`vendor`、`target` 等）、二进制文件和超过 1 MB 的文件都会跳过；扫描最多 20,000 个文件或 256 MB。
+- 知识库跟随账号权限：AI 只能看到已开启 AI 访问的连接的知识库，并且只包含该连接账号能看到的数据库和表——即使知识库是通过权限更高的连接建立的。服务器自带的数据库（`mysql`、`information_schema`、`performance_schema`、`sys`）不会建立知识库。
+- AI 只写本机的知识库文件，从不改动服务器，因此只读连接也允许写；可在 **Settings → MCP → AI may write knowledge** 按连接关闭，或用 `--no-knowledge-writes` 对整个服务关闭。
 
 ## 迁移到另一台 Mac
 
-**文件 ▸ Export Connections & Knowledge…**（或 **设置 → Backup**）会生成一个只有你本人可读的 `.ccinnmysql-backup` 文件。文件里包含已保存的连接及其全部设置，还可以选择包含：
+**文件 ▸ Export Settings and Knowledge…**（也可在 **Settings → General → Backup** 中找到）会写出一个只有你本人可读的 `.ccinnmysql-backup` 文件：
 
-- 这些连接的知识库，含关系、笔记和关联目录；
-- 它们的密码、SSH 密钥口令和客户端证书口令，使用你设定的口令加密（PBKDF2-HMAC-SHA256 迭代 600,000 次，再用 AES-256-GCM 加密）。不设口令时，文件中不含任何密钥。
+| 内容 | 默认 | 说明 |
+|---|---|---|
+| 连接 | 总是包含 | 主机、端口、用户、默认数据库、TLS 设置与证书路径、SSH 路由、AI 访问权限；从不包含 SSH 私钥或证书文件 |
+| 知识库及关联项目 | 开 | 关系、说明、术语表、主题域；位于主目录下的路径写成 `~/…` |
+| 应用设置 | 开 | 外观、自动 `LIMIT`、SQL 格式化、更新检查；不包含窗口位置 |
+| 查询历史 | 关 | 已去除其中的密码，但仍可能包含表名和字面量 |
+| 密码、SSH 密钥口令、客户端证书口令 | 关 | 只有设置口令（至少 12 个字符，输入两次）时才包含 |
 
-查询历史和数据行永远不会导出。
+**密码**使用 AES-256-GCM 加密，密钥由口令派生（PBKDF2-HMAC-SHA256，60 万次迭代），口令同时校验整个文件未被篡改。口令不会被保存：遗失后密码无法恢复，但其余内容仍可导入。
 
-在新 Mac 上选择 **文件 ▸ Import Connections & Knowledge…**，备份会合并到现有内容中：
-- 新连接会被添加；已存在的连接默认保留，除非你选择替换。
-- 输入正确的口令后，密码会恢复到钥匙串。口令错误时不会做任何修改；也可以不导入密码。
-- 知识库会合并：较新的笔记优先，你自己写的笔记不会被 AI 的笔记覆盖，关联目录会补充进来，表结构等事实取较新一次构建的结果。
-- 位于旧主目录下的路径（关联目录、证书和密钥文件），如果在新主目录下存在，会自动换成新路径。其余路径会在导入结果中列出；找不到的关联目录可以在知识库页面点 **Locate…** 重新指定，名称和引用它的证据都会保留。
+在另一台 Mac 上选择 **文件 ▸ Import Settings and Knowledge…**：打开文件，输入口令（或选择不导入密码），在写入任何内容之前先看到预览：
 
-导入过程不会连接服务器，也不会扫描代码。
+- **连接**：新增、未变化，或与本机不同。不同时可选「保留本机（Keep mine）」「使用导入（Use imported）」「两者都保留（Keep both）」，默认建议较新的修改。会降低安全性的改动会被高亮（换了服务器或 SSH 路由、更弱的 TLS、换了证书或密钥文件、更多 AI 权限、明文密码、执行修改前不再确认、允许 AI 使用特权账号）；对于没有口令、任何人都可能写出的文件，这些改动默认保留本机设置，除非你另行选择。允许 AI 使用特权账号这一项只会从经口令校验的文件导入。
+- **知识库**逐条合并：本机内容不会丢失，备份中记录的删除会生效，说明和术语以较新的版本为准。
+- **项目**若不在本机会被标出。可以为单个项目指定文件夹，也可以一次性替换公共前缀（`/Volumes/Work/code` → `~/code`）。
+- **设置**显示「旧值 → 新值」，每项可单独取消；**历史**显示每个连接新增多少条语句。
+
+导入前会先把当前配置（不含密码）保存到应用数据目录下的 `Backups/`，保留最近 5 份。导入报告提供 **Restore Pre-Import Snapshot**，只撤销这次导入写入的内容：它新增或替换的连接、新增的密码、知识库、历史记录和设置；导入之后你新建或修改的连接、执行的查询都会保留。被导入替换的密码无法恢复；如果该连接因此回到另一台服务器，导入的密码会被删除而不会发往那里，需要重新输入。同一个文件再次导入不会产生任何改动，CcinnMysql 1.5 生成的备份文件也可以照样导入。若导入改动了连接，请在 AI 客户端中重启 MCP 服务（Claude Code 中用 `/mcp`），让它读到新的连接。
 
 ## 从源码构建
 
@@ -292,8 +288,8 @@ scripts/it-down.sh
 CcinnMysql（SwiftUI / AppKit 应用，同时提供 `CcinnMysql mcp`）
  └─ CcinnMysqlKit   连接配置与钥匙串、SQL 词法/分句/自动 LIMIT、错误诊断、只读守卫、脱敏、
                     补全、图表、导出、历史、EXPLAIN 解析、表洞察、行编辑、MCP 服务器与工具、
-                    知识库（快照、命名推断、SQL 连接提取、代码扫描、关系图、ER 图、加锁存储）、
-                    备份与迁移（口令加密的密钥、路径重映射、合并导入）
+                    知识库（提取、基于证据的推断、连接路径、ER 图、代码扫描、加锁存储）、
+                    设置与知识库备份（口令加密的密钥、导入预览、撤销）
      └─ MySQLKit    支持就地 TLS 升级的传输层、连接 actor、连接池、会话、固定到服务器的 KILL、
                     SSH 隧道、发行版/版本识别、元数据与运维
          └─ MySQLWire   数据包分帧、握手、SSLRequest、认证插件（native、caching_sha2、sha256、
