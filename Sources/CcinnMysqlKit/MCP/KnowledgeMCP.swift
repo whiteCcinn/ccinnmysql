@@ -246,8 +246,10 @@ public enum KnowledgeMCP {
     }
 
     /// The `origin` remote of a git checkout without credentials (`https://user:token@host/…` → `https://host/…`).
+    /// The `origin` URL from `.git/config`, without credentials. The file is read only when it is a regular file (not a
+    /// FIFO, device or symbolic link) of at most 64 KB, without blocking: a hostile checkout cannot stall a link.
     public static func gitRemote(of directory: String) -> String? {
-        guard let config = try? String(contentsOfFile: directory + "/.git/config", encoding: .utf8) else { return nil }
+        guard let config = readSmallRegularFile(directory + "/.git/config", limit: 65_536) else { return nil }
         var inOrigin = false
         for line in config.split(whereSeparator: \.isNewline) {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -260,6 +262,29 @@ public enum KnowledgeMCP {
             return url.isEmpty ? nil : String(url.prefix(300))
         }
         return nil
+    }
+
+    static func readSmallRegularFile(_ path: String, limit: Int) -> String? {
+        let descriptor = open(path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { return nil }
+        defer { close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_size >= 0, info.st_size <= off_t(limit) else { return nil }
+        var data = Data(count: Int(info.st_size))
+        let count = data.withUnsafeMutableBytes { (buffer: UnsafeMutableRawBufferPointer) -> Int in
+            guard let base = buffer.baseAddress else { return 0 }
+            return read(descriptor, base, buffer.count)
+        }
+        guard count >= 0 else { return nil }
+        return String(decoding: data.prefix(count), as: UTF8.self)
+    }
+
+    /// An AI unlinks a project from a database; a link the user made stays (only the user removes it, in the app).
+    public static func unlinkAsAI(project: String, database: String, in index: inout KnowledgeIndex) throws {
+        if index.links.contains(where: { $0.project == project && $0.database == database && $0.addedBy == "user" }) {
+            throw MCPToolError("The user linked this project to the database; only the user can unlink it, in the app.")
+        }
+        index.links.removeAll { $0.project == project && $0.database == database }
     }
 
     public static func projectID(path: String) -> String {

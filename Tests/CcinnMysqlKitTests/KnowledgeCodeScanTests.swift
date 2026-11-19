@@ -121,3 +121,59 @@ struct KnowledgeCodeScanTests {
         #expect(try store.database(key)?.relationships.contains { $0.evidence.contains { $0.source == .scan } } == false)
     }
 }
+
+@Suite("Knowledge review fixes")
+struct KnowledgeReviewFixTests {
+    private func store() -> KnowledgeStore {
+        KnowledgeStore(directory: FileManager.default.temporaryDirectory.appendingPathComponent("ccinnmysql-kb-\(UUID().uuidString)", isDirectory: true))
+    }
+
+    // A hostile checkout's .git/config must not hang a link (it is read under the knowledge lock in the app and mcp).
+    @Test func gitConfigIsReadOnlyFromABoundedRegularFile() async throws {
+        let folder = ScanFolder()
+        try folder.write(".git/config", "[remote \"origin\"]\n\turl = https://user:secret@github.com/acme/api.git\n")
+        #expect(KnowledgeMCP.gitRemote(of: folder.url.path) == "https://github.com/acme/api.git")
+        let fifo = ScanFolder()
+        try FileManager.default.createDirectory(at: fifo.url.appendingPathComponent(".git"), withIntermediateDirectories: true)
+        #expect(mkfifo(fifo.url.appendingPathComponent(".git/config").path, 0o600) == 0)
+        let fromFIFO = await onDedicatedThread { () -> String? in KnowledgeMCP.gitRemote(of: fifo.url.path) }
+        #expect(fromFIFO == nil, "a FIFO is not read (it would block)")
+        let link = ScanFolder()
+        try FileManager.default.createDirectory(at: link.url.appendingPathComponent(".git"), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: link.url.appendingPathComponent(".git/config").path, withDestinationPath: "/dev/zero")
+        #expect(KnowledgeMCP.gitRemote(of: link.url.path) == nil, "a link to a device is not followed")
+        let huge = ScanFolder()
+        try huge.write(".git/config", String(repeating: "#", count: 200_000) + "\n[remote \"origin\"]\n\turl = x\n")
+        #expect(KnowledgeMCP.gitRemote(of: huge.url.path) == nil, "an oversized config is not read")
+    }
+
+    // Linking a folder the AI already linked makes it the user's link (so it is scanned); an AI cannot remove the user's link.
+    @Test func theUsersLinkWinsOverTheAIs() async throws {
+        let store = store()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        let folder = ScanFolder()
+        try FileManager.default.createDirectory(at: folder.url, withIntermediateDirectories: true)
+        let key = DatabaseKey(cluster: ClusterKey(rawValue: "my://db:3306"), catalog: "def", database: "shop")
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let path = try KnowledgeMCP.projectPath(folder.url.path, home: home) { _ in true }
+        let id = KnowledgeMCP.projectID(path: path)
+        try store.updateIndex { (index: inout KnowledgeIndex) -> Void in
+            index.projects.append(KnowledgeIndex.Project(id: id, path: path, name: "api", gitRemote: nil, addedAt: now, addedBy: "ai:claude-code"))
+            index.links.append(KnowledgeIndex.Link(project: id, database: key.fileID, addedAt: now, addedBy: "ai:claude-code"))
+        }
+        _ = try KnowledgeService.linkProject(path: folder.url.path, to: key, store: store, home: home, now: now)
+        #expect(try store.index().links.map(\.addedBy) == ["user"])
+        var index = try store.index()
+        #expect(throws: MCPToolError.self) { try KnowledgeMCP.unlinkAsAI(project: id, database: key.fileID, in: &index) }
+        #expect(index.links.count == 1)
+    }
+
+    @Test func aHugeFolderIsWalkedOnlyUpToItsEntryBudget() async throws {
+        let folder = ScanFolder()
+        for index in 0..<30 { try folder.write("assets/\(index).png", "x") }
+        try folder.write("zz.go", joinSQL)
+        let result = try await CodeScanner(limits: CodeScanner.Limits(maxEntries: 10)).scan(projects: [CodeScanner.Project(id: "p1", root: folder.url)],
+                                                                                          tables: tables, database: "shop", now: now)
+        #expect(result.truncated, "visiting stops at the entry budget and says so")
+    }
+}

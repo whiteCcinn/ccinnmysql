@@ -332,19 +332,20 @@ extension MySQLMCPTools {
         let databaseID = key.fileID
         let projectID = KnowledgeMCP.projectID(path: path)
         let now = settings.now()
+        let expanded = KnowledgeMCP.expand(path, home: settings.home)
+        let remote = KnowledgeMCP.gitRemote(of: expanded) // outside the lock
         try settings.store.updateIndex { index in
             if !index.databases.contains(where: { $0.key == key }) { index.databases.append(KnowledgeIndex.DatabaseEntry(key: key)) }
             if !index.clusters.contains(where: { $0.key == key.cluster || $0.aliases.contains(key.cluster) }) {
                 index.clusters.append(KnowledgeIndex.ClusterEntry(key: key.cluster))
             }
             if unlink {
-                index.links.removeAll { $0.project == projectID && $0.database == databaseID }
+                try KnowledgeMCP.unlinkAsAI(project: projectID, database: databaseID, in: &index)
                 return
             }
             if !index.projects.contains(where: { $0.id == projectID }) {
-                let expanded = KnowledgeMCP.expand(path, home: settings.home)
                 let name = args.string("name").map { KnowledgeMCP.clean($0, limit: 120) } ?? URL(fileURLWithPath: expanded).lastPathComponent
-                index.projects.append(KnowledgeIndex.Project(id: projectID, path: path, name: name, gitRemote: KnowledgeMCP.gitRemote(of: expanded),
+                index.projects.append(KnowledgeIndex.Project(id: projectID, path: path, name: name, gitRemote: remote,
                                                              addedAt: now, addedBy: by))
             }
             if !index.links.contains(where: { $0.project == projectID && $0.database == databaseID }) {

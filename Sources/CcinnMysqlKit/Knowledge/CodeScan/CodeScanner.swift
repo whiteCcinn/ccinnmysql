@@ -12,9 +12,12 @@ public struct CodeScanner: Sendable {
         public var maxTotalBytes: Int
         public var maxReferencesPerTable: Int
         public var concurrency: Int
+        /// Directory entries visited (files of any kind and folders), so a folder of millions of non-source files ends too.
+        public var maxEntries: Int
 
         public init(maxFiles: Int = 20_000, maxFileBytes: Int = 1_048_576, maxTotalBytes: Int = 256 * 1_048_576,
-                    maxReferencesPerTable: Int = 20, concurrency: Int = ProcessInfo.processInfo.activeProcessorCount) {
+                    maxReferencesPerTable: Int = 20, concurrency: Int = ProcessInfo.processInfo.activeProcessorCount, maxEntries: Int = 200_000) {
+            self.maxEntries = max(0, maxEntries)
             self.maxFiles = max(0, maxFiles)
             self.maxFileBytes = max(0, maxFileBytes)
             self.maxTotalBytes = max(0, maxTotalBytes)
@@ -126,6 +129,7 @@ public struct CodeScanner: Sendable {
         var visited = 0
         while let url = enumerator.nextObject() as? URL {
             visited += 1
+            if visited > limits.maxEntries { return (jobs, bytes, true) }
             if visited % 512 == 0 { try Task.checkCancellation() }
             guard let values = try? url.resourceValues(forKeys: Set(keys)) else { continue }
             if values.isSymbolicLink == true { continue }

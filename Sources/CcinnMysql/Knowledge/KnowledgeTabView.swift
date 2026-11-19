@@ -193,7 +193,7 @@ struct KnowledgeTabView: View {
     private var projects: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Local projects linked to \(model.key.database). AI sessions started in one of them find this knowledge with list_knowledge.")
+                Text("Local projects linked to \(model.key.database). AI sessions started in one of them find this knowledge with list_knowledge; Refresh scans the code of the projects you linked for joins.")
                     .font(.callout).foregroundStyle(.secondary)
                 Spacer()
                 Button("Link Project…") {
@@ -206,6 +206,10 @@ struct KnowledgeTabView: View {
                         HStack {
                             Text(project.name).font(.headline)
                             if !model.projectExists(project) { Badge(text: "Missing on this Mac", color: .orange, systemImage: "questionmark.folder") }
+                            if model.linkedByAI.contains(project.id) {
+                                Badge(text: "Linked by AI · code not scanned", color: .secondary, systemImage: "sparkles")
+                                    .help("Link it yourself (Link Project…) to let Refresh scan its code for joins.")
+                            }
                         }
                         Text(project.path).font(Theme.monospacedSmall).foregroundStyle(.secondary)
                         if let remote = project.gitRemote { Text(remote).font(.caption).foregroundStyle(.secondary) }

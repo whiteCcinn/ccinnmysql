@@ -38,6 +38,8 @@ final class KnowledgeTabModel {
 
     var knowledge: DatabaseKnowledge?
     var projects: [KnowledgeIndex.Project] = []
+    /// Projects only an AI linked: the code scanner does not read them until the user links them too.
+    var linkedByAI: Set<String> = []
     var section: Section = .relationships
     var filter: RelationshipFilter = .review
     var isRefreshing = false
@@ -83,7 +85,9 @@ final class KnowledgeTabModel {
                 (try store.database(key), try store.index())
             }.value
             self.knowledge = knowledge
-            let linked = Set(index.links.filter { $0.database == key.fileID }.map(\.project))
+            let links = index.links.filter { $0.database == key.fileID }
+            let linked = Set(links.map(\.project))
+            linkedByAI = Set(links.filter { $0.addedBy != "user" }.map(\.project))
             projects = index.projects.filter { linked.contains($0.id) }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             error = nil
             if diagramArea == nil { diagramArea = areas.first?.name }
