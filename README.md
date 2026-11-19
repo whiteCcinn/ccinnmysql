@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>A fast, native macOS client for MySQL, MariaDB and Percona Server.</b><br>
-  See who blocks whom, which statements are expensive, how far replicas lag and how close a table is to running out of AUTO_INCREMENT — and read query plans as a tree.
+  See who blocks whom, which statements are expensive, how far replicas lag and how close a table is to running out of AUTO_INCREMENT, read query plans as a tree — and give AI assistants a map of how your tables join.
 </p>
 
 <p align="center">
@@ -38,6 +38,8 @@ Most MySQL GUIs stop at a table list and a query box. The questions that matter 
 - what the optimizer actually does with a query.
 
 CcinnMysql puts those answers one click away, in a native SwiftUI/AppKit app with its own pure-Swift MySQL protocol client — TLS, `caching_sha2_password`, MariaDB `ed25519` and all. No Electron, no JDBC, no bundled runtime, no telemetry.
+
+AI assistants face the same questions with less context: every session rediscovers the schema and guesses how the tables join. CcinnMysql's [knowledge base](#knowledge-base-teach-ai-your-schema) remembers that per database — from foreign keys, naming conventions, view and routine definitions and the code that uses the database — so Claude Code, Codex or Cursor start from the right joins.
 
 ## Features
 
@@ -90,6 +92,8 @@ TLS is negotiated on the same socket after the server greeting (`SSLRequest`), l
 | ![Server](docs/screenshots/server-overview-mysql84.png) | ![Replication](docs/screenshots/replication-mysql84.png) |
 | **Charts from a query (MariaDB)** | **Connection with TLS options** |
 | ![Chart](docs/screenshots/chart-mariadb114.png) | ![Connection](docs/screenshots/connection-tls.png) |
+| **Knowledge base: a table's AI notes, joins and uses in code** | **Knowledge base: a table's neighbourhood** |
+| ![Knowledge base table](docs/screenshots/knowledge-table-mysql84.png) | ![Knowledge base diagram](docs/screenshots/knowledge-diagram-mysql84.png) |
 
 ## Installation
 
@@ -156,7 +160,7 @@ CcinnMysql has a built-in **Model Context Protocol** server. AI assistants such 
    { "mcpServers": { "ccinnmysql": { "command": "/Applications/CcinnMysql.app/Contents/MacOS/CcinnMysql", "args": ["mcp"] } } }
    ```
 
-3. Ask questions such as *"Who is blocking the update on `shop.orders`?"*, *"Which tables in `shop` have redundant indexes?"* or *"Why is this query slow?"*
+3. Ask questions such as *"Who is blocking the update on `shop.orders`?"*, *"Which tables in `shop` have redundant indexes?"*, *"Why is this query slow?"* or *"How do I join `conversions` to `advertisers`?"*
 
 **Tools**
 
@@ -232,7 +236,7 @@ Judgements come from AI assistants (`ai`) or from you (`user`). They are table p
 
 - *"Which tables do I need for daily revenue per advertiser, and how do they join?"*
 - *"Draw the ER diagram around `orders`."*
-- *"Check whether `ads.slot_id` really references `slots.id` and record the result."*
+- *"Check whether `impressions.slot_id` really references `slots.id` and record the result."*
 
 **Storage and privacy.**
 - Knowledge bases are kept in `~/Library/Application Support/CcinnMysql/Knowledge/<connection>/<database>.json`: owner-only (0600 files in a 0700 folder), one file per database, readable by the app and every MCP process. They hold metadata and annotations, never row data.
@@ -288,7 +292,8 @@ scripts/it-down.sh
 CcinnMysql (SwiftUI / AppKit app, also hosts `CcinnMysql mcp`)
  └─ CcinnMysqlKit   profiles & Keychain, SQL lexer/splitter/auto-limit, error diagnostics, read-only guard, redaction,
                     completion, charts, export, history, EXPLAIN parsers, table insights, row editing, MCP server & tools,
-                    knowledge base (snapshot, naming inference, SQL join extraction, code scan, graph, ERD, locked store)
+                    knowledge base (snapshot, naming inference, SQL join extraction, code scan, graph, ERD, locked store),
+                    backup & migration (passphrase-encrypted secrets, path remapping, merging import)
      └─ MySQLKit    transport with in-place TLS upgrade, connection actor, pool, sessions, pinned KILL,
                     SSH tunnels, flavor/version detection, metadata and operations
          └─ MySQLWire   packet framing, handshake, SSLRequest, auth plugins (native, caching_sha2, sha256,

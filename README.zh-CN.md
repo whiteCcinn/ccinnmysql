@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>快速、原生的 macOS MySQL / MariaDB / Percona 客户端。</b><br>
-  一眼看清谁在阻塞谁、哪些语句最耗资源、从库延迟多少、哪张表的 AUTO_INCREMENT 快要耗尽——并以树状图阅读执行计划。
+  一眼看清谁在阻塞谁、哪些语句最耗资源、从库延迟多少、哪张表的 AUTO_INCREMENT 快要耗尽，以树状图阅读执行计划——还能让 AI 助手掌握各表之间如何关联。
 </p>
 
 <p align="center">
@@ -38,6 +38,8 @@
 - 优化器实际如何执行一条查询。
 
 CcinnMysql 把这些答案放在一次点击之内。它是原生 SwiftUI/AppKit 应用，自带纯 Swift 实现的 MySQL 协议客户端——支持 TLS、`caching_sha2_password`、MariaDB `ed25519` 等。没有 Electron、没有 JDBC、没有捆绑运行时，也没有遥测。
+
+AI 助手面对同样的问题，掌握的上下文却更少：每个会话都要重新摸索库表结构，再去猜表之间怎么关联。CcinnMysql 的[知识库](#知识库让-ai-了解你的库表)按数据库记住这些——来源包括外键、命名约定、视图和存储例程定义，以及使用该数据库的代码——让 Claude Code、Codex 或 Cursor 从正确的关联出发。
 
 ## 功能
 
@@ -90,6 +92,8 @@ TLS 与 `mysql` 客户端一样，在服务器握手包之后通过 `SSLRequest`
 | ![Server](docs/screenshots/server-overview-mysql84.png) | ![Replication](docs/screenshots/replication-mysql84.png) |
 | **由查询生成的图表（MariaDB）** | **带 TLS 选项的连接** |
 | ![Chart](docs/screenshots/chart-mariadb114.png) | ![Connection](docs/screenshots/connection-tls.png) |
+| **知识库：一张表的 AI 注释、关联与代码引用** | **知识库：一张表的关系邻域** |
+| ![Knowledge base table](docs/screenshots/knowledge-table-mysql84.png) | ![Knowledge base diagram](docs/screenshots/knowledge-diagram-mysql84.png) |
 
 ## 安装
 
@@ -156,7 +160,7 @@ CcinnMysql 内置 **Model Context Protocol** 服务器。Claude Code、Codex、C
    { "mcpServers": { "ccinnmysql": { "command": "/Applications/CcinnMysql.app/Contents/MacOS/CcinnMysql", "args": ["mcp"] } } }
    ```
 
-3. 可以这样提问：*"是谁阻塞了 `shop.orders` 上的更新？"*、*"`shop` 里哪些表有冗余索引？"*、*"这条查询为什么慢？"*
+3. 可以这样提问：*"是谁阻塞了 `shop.orders` 上的更新？"*、*"`shop` 里哪些表有冗余索引？"*、*"这条查询为什么慢？"*、*"`conversions` 怎么关联到 `advertisers`？"*
 
 **工具**
 
@@ -232,7 +236,7 @@ GRANT PROCESS ON *.* TO 'ai_ro'@'%';                     -- 可选：进程列�
 
 - *"按广告主统计每日收入需要哪些表？它们怎么关联？"*
 - *"画出 `orders` 周边的 ER 图。"*
-- *"核实 `ads.slot_id` 是否真的引用 `slots.id`，并把结论记录下来。"*
+- *"核实 `impressions.slot_id` 是否真的引用 `slots.id`，并把结论记录下来。"*
 
 **存储与隐私。**
 - 知识库保存在 `~/Library/Application Support/CcinnMysql/Knowledge/<连接>/<数据库>.json`，仅所有者可读写（文件 0600，目录 0700），每个数据库一个文件，供应用和所有 MCP 进程共用。其中只有元数据和笔记，没有任何数据行。
@@ -288,7 +292,8 @@ scripts/it-down.sh
 CcinnMysql（SwiftUI / AppKit 应用，同时提供 `CcinnMysql mcp`）
  └─ CcinnMysqlKit   连接配置与钥匙串、SQL 词法/分句/自动 LIMIT、错误诊断、只读守卫、脱敏、
                     补全、图表、导出、历史、EXPLAIN 解析、表洞察、行编辑、MCP 服务器与工具、
-                    知识库（快照、命名推断、SQL 连接提取、代码扫描、关系图、ER 图、加锁存储）
+                    知识库（快照、命名推断、SQL 连接提取、代码扫描、关系图、ER 图、加锁存储）、
+                    备份与迁移（口令加密的密钥、路径重映射、合并导入）
      └─ MySQLKit    支持就地 TLS 升级的传输层、连接 actor、连接池、会话、固定到服务器的 KILL、
                     SSH 隧道、发行版/版本识别、元数据与运维
          └─ MySQLWire   数据包分帧、握手、SSLRequest、认证插件（native、caching_sha2、sha256、
