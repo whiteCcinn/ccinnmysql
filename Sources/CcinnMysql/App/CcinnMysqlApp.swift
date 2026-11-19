@@ -43,9 +43,6 @@ private struct SettingsTabs: View {
             MCPSettingsView(store: AppServices.shared.profiles)
                 .tabItem { Label("MCP", systemImage: "sparkles") }
                 .tag("mcp")
-            MigrationSettingsView(store: AppServices.shared.profiles, knowledge: AppServices.shared.knowledgeStore)
-                .tabItem { Label("Backup", systemImage: "externaldrive") }
-                .tag("backup")
         }
     }
 }
@@ -236,17 +233,7 @@ enum LaunchArguments {
                         }
                     }
                 }
-                if let database = value("--knowledge") {
-                    workspace.openKnowledge(database: database)
-                    if case let .knowledge(model)? = workspace.selectedTab?.kind {
-                        if let raw = value("--knowledge-section"),
-                           let section = KnowledgeModel.Section.allCases.first(where: { $0.rawValue.lowercased().hasPrefix(raw.lowercased()) }) {
-                            model.section = section
-                        }
-                        model.selectedTable = value("--knowledge-table")
-                        if arguments.contains("--knowledge-build") { model.build() }
-                    }
-                }
+                if let database = value("--knowledge") { workspace.openKnowledge(database: database) }
                 if let raw = value("--server"),
                    let section = ServerModel.Section.allCases.first(where: { $0.rawValue.lowercased().replacingOccurrences(of: " ", with: "").hasPrefix(raw.lowercased()) }) {
                     workspace.openServer(section: section)
@@ -369,10 +356,6 @@ struct AppCommands: Commands {
     @Environment(\.openSettings) private var openSettings
 
     var body: some Commands {
-        CommandGroup(replacing: .importExport) {
-            Button("Export Connections & Knowledge…") { openBackupSettings() }
-            Button("Import Connections & Knowledge…") { openBackupSettings() }
-        }
         CommandGroup(after: .newItem) {
             // File ▸ New Window (⌘N) comes from the window group and opens the connection screen.
             Button("New Window with This Connection") {
@@ -426,9 +409,4 @@ struct AppCommands: Commands {
         }
     }
 
-    /// Settings → Backup (export and import live there).
-    private func openBackupSettings() {
-        UserDefaults.standard.set("backup", forKey: "settingsTab")
-        openSettings()
-    }
 }

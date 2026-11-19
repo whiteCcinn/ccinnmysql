@@ -57,6 +57,11 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
     public var aiAllowsPrivilegedAccount: Bool
     public var createdAt: Date
     public var lastConnectedAt: Date?
+    /// Set on every save; backups use it to tell which side of a conflict is newer.
+    public var updatedAt: Date?
+    /// Whether an AI may write knowledge (notes, relationships, glossary) for this connection's databases. Knowledge is
+    /// local to this Mac and never changes the server, so it is allowed on read-only AI access too.
+    public var mcpKnowledgeWrites: Bool = true
 
     public init(id: UUID = UUID(), name: String = "", host: String = "127.0.0.1", port: Int = 3306, username: String = "root",
                 defaultDatabase: String? = nil, color: ProfileColor = .none, isFavorite: Bool = false, ssh: SSHTunnelConfiguration? = nil,
@@ -113,6 +118,8 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
         aiAllowsPrivilegedAccount = try container.decodeIfPresent(Bool.self, forKey: .aiAllowsPrivilegedAccount) ?? false
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         lastConnectedAt = try container.decodeIfPresent(Date.self, forKey: .lastConnectedAt)
+        updatedAt = try? container.decodeIfPresent(Date.self, forKey: .updatedAt)
+        mcpKnowledgeWrites = (try? container.decodeIfPresent(Bool.self, forKey: .mcpKnowledgeWrites)) ?? true
     }
 
     public static func recents(_ profiles: [ConnectionProfile]) -> [ConnectionProfile] {
@@ -361,8 +368,13 @@ public final class ProfileRepository: Sendable {
     }
 
     public func delete(_ profile: ConnectionProfile) throws {
+        try deleteSecrets(of: profile.id)
+    }
+
+    /// Removes every secret of a profile (password, SSH secret, client certificate passphrase) from the Keychain.
+    public func deleteSecrets(of profileID: UUID) throws {
         for kind in SecretKey.Kind.allCases {
-            try secrets.setSecret(nil, for: SecretKey(profileID: profile.id, kind: kind))
+            try secrets.setSecret(nil, for: SecretKey(profileID: profileID, kind: kind))
         }
     }
 }

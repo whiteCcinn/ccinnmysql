@@ -45,6 +45,8 @@ final class ProfileStore {
     /// Inserts or updates a profile; secrets go to the Keychain, never to the profile file.
     @discardableResult
     func save(_ profile: ConnectionProfile, password: String?, sshSecret: String?, clientCertificatePassphrase: String? = nil) throws -> ConnectionProfile {
+        var profile = profile
+        profile.updatedAt = Date()
         try repository.storeSecrets(for: profile, password: password, sshSecret: sshSecret,
                                     clientCertificatePassphrase: profile.clientCertificatePath == nil ? nil : clientCertificatePassphrase)
         if let index = profiles.firstIndex(where: { $0.id == profile.id }) {
@@ -76,18 +78,28 @@ final class ProfileStore {
     func setMCPAccess(_ access: MCPAccess, for profile: ConnectionProfile) {
         guard let index = profiles.firstIndex(where: { $0.id == profile.id }) else { return }
         profiles[index].mcpAccess = access
+        profiles[index].updatedAt = Date()
         try? persist()
     }
 
     func setAIAllowsPrivilegedAccount(_ allowed: Bool, for profile: ConnectionProfile) {
         guard let index = profiles.firstIndex(where: { $0.id == profile.id }) else { return }
         profiles[index].aiAllowsPrivilegedAccount = allowed
+        profiles[index].updatedAt = Date()
+        try? persist()
+    }
+
+    func setMCPKnowledgeWrites(_ allowed: Bool, for profile: ConnectionProfile) {
+        guard let index = profiles.firstIndex(where: { $0.id == profile.id }) else { return }
+        profiles[index].mcpKnowledgeWrites = allowed
+        profiles[index].updatedAt = Date()
         try? persist()
     }
 
     func toggleFavorite(_ profile: ConnectionProfile) {
         guard let index = profiles.firstIndex(where: { $0.id == profile.id }) else { return }
         profiles[index].isFavorite.toggle()
+        profiles[index].updatedAt = Date()
         try? persist()
     }
 
@@ -117,7 +129,5 @@ final class AppServices {
     static let shared = AppServices()
 
     let profiles = ProfileStore()
-    let historyDirectory = ProfileRepository.defaultDirectory.appendingPathComponent("History", isDirectory: true)
-    /// Knowledge bases of every window (one cache, per-file locking shared with MCP processes).
-    let knowledgeStore = KnowledgeStore()
+    let historyDirectory = QueryHistoryStore.defaultDirectory
 }

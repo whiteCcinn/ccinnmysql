@@ -45,16 +45,35 @@ public struct MySQLMCPTools: MCPToolProvider {
     public let audit: MCPAuditLog?
     /// Definer-rights objects each connection's account can reach, for the notice of read-only query results.
     private let definerRights = DefinerRightsCache()
+    /// Knowledge tools are offered when set.
+    public let knowledge: KnowledgeToolSettings?
+    let visibilityCache = KnowledgeVisibilityCache()
 
     public static let defaultRowLimit = 200
     public static let maxRowLimit = 1_000
     public static let defaultTimeout = 30.0
     public static let maxTimeout = 120.0
 
-    public init(resolver: MCPProfileResolver, registry: MCPClientRegistry, audit: MCPAuditLog?) {
+    public init(resolver: MCPProfileResolver, registry: MCPClientRegistry, audit: MCPAuditLog?, knowledge: KnowledgeToolSettings? = nil) {
         self.resolver = resolver
         self.registry = registry
         self.audit = audit
+        self.knowledge = knowledge
+    }
+
+    /// Knowledge write tools exist when some enabled connection lets AI write knowledge.
+    var knowledgeWritesAvailable: Bool {
+        guard let knowledge, !knowledge.writesDisabled else { return false }
+        return resolver.enabledProfiles.contains { $0.mcpKnowledgeWrites }
+    }
+
+    public func prompts() async -> [MCPPrompt] {
+        knowledge == nil ? [] : KnowledgeMCP.prompts
+    }
+
+    public func prompt(name: String, arguments: [String: String]) async throws -> MCPPromptText {
+        guard knowledge != nil else { throw MCPToolError("Unknown prompt “\(name)”.") }
+        return try KnowledgeMCP.prompt(name: name, arguments: arguments)
     }
 
     // MARK: Definitions
@@ -124,6 +143,11 @@ public struct MySQLMCPTools: MCPToolProvider {
                                                            "timeout_seconds": ["type": "number", "minimum": 1, "maximum": .int(Int64(Self.maxTimeout))]],
                                                           required: ["sql"]), readOnly: false, destructive: true, idempotent: false))
         }
+        if knowledge != nil {
+            tools += KnowledgeMCP.tools(writes: knowledgeWritesAvailable) { (properties: [String: JSONValue], required: [String]) -> JSONValue in
+                Self.schema(properties, required: required)
+            }
+        }
         return tools
     }
 
@@ -143,6 +167,18 @@ public struct MySQLMCPTools: MCPToolProvider {
     final class CallContext: @unchecked Sendable {
         private let lock = NSLock()
         private var storage: (connection: String?, statement: String?, rows: Int?) = (nil, nil, nil)
+        private var attribution: (client: String?, detail: String?) = (nil, nil)
+
+        /// The MCP client's name (`clientInfo.name`).
+        var client: String? {
+            get { lock.withLock { attribution.client } }
+            set { lock.withLock { attribution.client = newValue } }
+        }
+        /// What a knowledge write changed, for the audit log.
+        var detail: String? {
+            get { lock.withLock { attribution.detail } }
+            set { lock.withLock { attribution.detail = newValue } }
+        }
 
         var connection: String? {
             get { lock.withLock { storage.connection } }
@@ -159,9 +195,14 @@ public struct MySQLMCPTools: MCPToolProvider {
     }
 
     public func call(name: String, arguments: [String: JSONValue]) async -> MCPToolResult {
+        await call(name: name, arguments: arguments, context: MCPCallContext())
+    }
+
+    public func call(name: String, arguments: [String: JSONValue], context client: MCPCallContext) async -> MCPToolResult {
         let clock = ContinuousClock()
         let started = clock.now
         let context = CallContext()
+        context.client = client.clientName
         let result: MCPToolResult
         do {
             try await validate(name: name, arguments: arguments)
@@ -178,7 +219,7 @@ public struct MySQLMCPTools: MCPToolProvider {
         let elapsed = clock.now - started
         let milliseconds = Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15
         await audit?.record(tool: name, connection: context.connection, statement: context.statement, durationMilliseconds: milliseconds,
-                            rows: context.rows, error: result.isError ? result.payload.stringValue : nil)
+                            rows: context.rows, error: result.isError ? result.payload.stringValue : nil, client: context.client, detail: context.detail)
         return result
     }
 
@@ -260,6 +301,9 @@ public struct MySQLMCPTools: MCPToolProvider {
             }
             return try await execute(client, args, context)
         default:
+            if let knowledge, KnowledgeMCP.readTools.contains(name) || KnowledgeMCP.writeTools.contains(name) {
+                return try await knowledgeCall(name, args, client, resolved.profile, context, knowledge)
+            }
             throw MCPToolError("Unknown tool “\(name)”.")
         }
     }

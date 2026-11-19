@@ -15,7 +15,7 @@ struct WorkspaceTab: Identifiable, Equatable {
         case object(ObjectDetailModel)
         case sql(SQLTabModel)
         case server(ServerModel)
-        case knowledge(KnowledgeModel)
+        case knowledge(KnowledgeTabModel)
     }
 
     let id = UUID()
@@ -37,7 +37,7 @@ struct WorkspaceTab: Identifiable, Equatable {
         case let .object(model): model.object.schema
         case let .sql(model): model.database
         case .server: nil
-        case let .knowledge(model): model.database
+        case let .knowledge(model): model.key.database
         }
     }
 
@@ -290,11 +290,15 @@ final class WorkspaceModel {
             showToast("Choose a database in the sidebar first", isError: true)
             return
         }
-        if let existing = tabs.first(where: { if case let .knowledge(model) = $0.kind { model.database == database } else { false } }) {
+        if let existing = tabs.first(where: { if case let .knowledge(model) = $0.kind { model.key.database == database } else { false } }) {
             selectedTabID = existing.id
             return
         }
-        let model = KnowledgeModel(workspace: self, database: database, store: AppServices.shared.knowledgeStore)
+        guard !KnowledgeExtractor.isSystemDatabase(database) else {
+            showToast("“\(database)” is the server's own database; knowledge covers your databases.", isError: true)
+            return
+        }
+        let model = KnowledgeTabModel(workspace: self, database: database)
         let tab = WorkspaceTab(kind: .knowledge(model))
         tabs.append(tab)
         selectedTabID = tab.id
@@ -302,7 +306,7 @@ final class WorkspaceModel {
 
     /// The database of the selected tab, else the sidebar's.
     var currentDatabase: String? {
-        if case let .knowledge(model)? = selectedTab?.kind { return model.database }
+        if case let .knowledge(model)? = selectedTab?.kind { return model.key.database }
         return sidebarContextHint()
     }
 
@@ -335,7 +339,7 @@ final class WorkspaceModel {
         switch tab.kind {
         case let .sql(model): model.close()
         case let .server(model): model.close()
-        case let .knowledge(model): model.close()
+        case let .knowledge(model): model.stopWatching()
         case .object: break
         }
     }

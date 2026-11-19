@@ -145,7 +145,8 @@ public actor MCPAuditLog {
         self.maxBytes = maxBytes
     }
 
-    public func record(tool: String, connection: String?, statement: String?, durationMilliseconds: Double, rows: Int?, error: String?) {
+    public func record(tool: String, connection: String?, statement: String?, durationMilliseconds: Double, rows: Int?, error: String?,
+                       client: String? = nil, detail: String? = nil) {
         var entry: [String: JSONValue] = [
             "time": .string(ISO8601DateFormatter().string(from: Date())),
             "tool": .string(tool),
@@ -158,6 +159,8 @@ public actor MCPAuditLog {
             let redacted = statement.map { SQLRedactor.redact(message: error, statement: $0) } ?? error
             entry["error"] = .string(String(redacted.prefix(2_000)))
         }
+        if let client { entry["client"] = .string(client) }
+        if let detail { entry["detail"] = .string(String(detail.prefix(2_000))) }
         let line = JSONValue.object(entry).serialized() + "\n"
         let manager = FileManager.default
         try? manager.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)

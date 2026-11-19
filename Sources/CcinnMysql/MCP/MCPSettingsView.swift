@@ -48,7 +48,7 @@ struct MCPSettingsView: View {
                 Text("CcinnMysql includes a Model Context Protocol server, so AI assistants such as Claude Code, Codex and Claude Desktop can explore your MySQL and MariaDB servers, diagnose locks and slow statements, and run queries through your saved connections. Passwords stay in your Keychain and are never shown to the AI.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                Label("Each database can have a knowledge base (Knowledge in a connected window's toolbar). It records how tables relate, from foreign keys, definitions, naming and the code folders you link, plus notes the AI verified, so AI assistants answer from it instead of exploring table by table.",
+                Label("Each database can have a knowledge base (Knowledge in a connected window's toolbar). It records how tables relate, from foreign keys, view and routine definitions, your query history and naming, plus what AI sessions learn from your code, so AI assistants answer from it instead of exploring table by table.",
                       systemImage: "brain")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -83,6 +83,13 @@ struct MCPSettingsView: View {
                             if let report = reports[profile.id] {
                                 Text(report).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                             }
+                        }
+                        .padding(.leading, 17)
+                    }
+                    if profile.mcpAccess != .disabled {
+                        Toggle(isOn: Binding(get: { profile.mcpKnowledgeWrites }, set: { store.setMCPKnowledgeWrites($0, for: profile) })) {
+                            Text("AI may write knowledge")
+                            Text("Lets AI sessions add notes, relationships, glossary terms and project links to this Mac's knowledge base. It never changes the server, so it works with read-only access too.")
                         }
                         .padding(.leading, 17)
                     }
