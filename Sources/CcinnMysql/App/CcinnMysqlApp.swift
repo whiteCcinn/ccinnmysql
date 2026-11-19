@@ -22,6 +22,14 @@ struct CcinnMysqlApp: App {
             UpdateCommands()
         }
 
+        Window("Settings and Knowledge Backup", id: BackupWindow.id) {
+            BackupWindow(center: AppServices.shared.backup)
+                .preferredColorScheme(AppearancePreference(rawValue: appearance)?.colorScheme)
+                .tint(Theme.accent)
+        }
+        .defaultSize(width: 720, height: 640)
+        .windowResizability(.contentMinSize)
+
         Settings {
             SettingsTabs()
             .frame(width: 620)
@@ -112,7 +120,9 @@ struct RootView: View {
             // Windows opened by this process connect and skip the launch arguments. Every other window (no request,
             // or a request macOS restored) falls through to the File ▸ New Window path below.
             if session.connect(request, store: store) { return }
-            LaunchArguments.consume(into: session, store: store) { openWindow(id: Self.windowGroupID, value: $0) }
+            LaunchArguments.consume(into: session, store: store, openBackup: { BackupCommands.open($0, openWindow: openWindow) }) {
+                openWindow(id: Self.windowGroupID, value: $0)
+            }
             let arguments = ProcessInfo.processInfo.arguments
             if let index = arguments.firstIndex(of: "--settings"), arguments.indices.contains(index + 1) {
                 UserDefaults.standard.set(arguments[index + 1], forKey: "settingsTab")
@@ -166,6 +176,7 @@ struct ConnectingView: View {
 ///  [--object schema.name] [--section overview|columns|indexes|foreign|partitions|insights|ddl|data] [--sql "…"] [--auto-run]
 ///  [--view grid|chart|plan] [--server overview|processlist|innodb|statements|replication|variables|status|users] [--profile name]
 ///  [--duplicate-window] [--format] [--appearance light|dark]`. The password comes from `CCINNMYSQL_PASSWORD` (never the command line).
+/// `CcinnMysql --import-backup <file>` shows the import preview of a backup, as File ▸ Import Settings and Knowledge… does.
 /// Applied once per process, in the first window opened without a connection request.
 @MainActor
 enum LaunchArguments {
@@ -177,10 +188,13 @@ enum LaunchArguments {
         return arguments[index + 1]
     }
 
-    /// `openWindow` opens the window for `--duplicate-window`.
-    static func consume(into session: WindowSession, store: ProfileStore, openWindow: @escaping @MainActor (WindowRequest) -> Void) {
+    /// `openBackup` shows the import preview of a backup (`--import-backup`); `openWindow` opens the window for
+    /// `--duplicate-window`.
+    static func consume(into session: WindowSession, store: ProfileStore, openBackup: @MainActor (URL) -> Void,
+                        openWindow: @escaping @MainActor (WindowRequest) -> Void) {
         guard !consumed else { return }
         consumed = true
+        if let path = value("--import-backup") { openBackup(URL(fileURLWithPath: (path as NSString).expandingTildeInPath)) }
         let arguments = ProcessInfo.processInfo.arguments
         let profile: ConnectionProfile
         var password: String?
@@ -313,6 +327,7 @@ enum AppearancePreference: String, CaseIterable, Identifiable {
 }
 
 struct SettingsView: View {
+    @Environment(\.openWindow) private var openWindow
     @AppStorage("appearance") private var appearance = AppearancePreference.system.rawValue
     @AppStorage("autoLimit") private var autoLimit = 1000
     @AppStorage("sqlFormatKeywordCase") private var formatKeywordCase = SQLFormatOptions.KeywordCase.upper.rawValue
@@ -342,6 +357,16 @@ struct SettingsView: View {
                     NSWorkspace.shared.activateFileViewerSelecting([ProfileRepository.defaultDirectory])
                 }
             }
+            LabeledContent {
+                HStack {
+                    Button("Export…") { BackupCommands.export(openWindow: openWindow) }
+                    Button("Import…") { BackupCommands.import(openWindow: openWindow) }
+                }
+                .disabled(AppServices.shared.backup.isBusy)
+            } label: {
+                Text("Backup")
+                Text("Connections, knowledge, linked projects and settings, to move to another Mac.")
+            }
             UpdateSettingsSections()
         }
         .formStyle(.grouped)
@@ -359,6 +384,28 @@ extension FocusedValues {
     var windowSession: WindowSession? {
         get { self[WindowSessionKey.self] }
         set { self[WindowSessionKey.self] = newValue }
+    }
+}
+
+/// Opens the Backup window on the export form or after choosing a file to import. Needs no connection.
+@MainActor
+enum BackupCommands {
+    // While an export or import runs these only bring its window forward; BackupCenter refuses a second flow.
+    static func export(openWindow: OpenWindowAction) {
+        let center = AppServices.shared.backup
+        if !center.isBusy { center.beginExport() }
+        openWindow(id: BackupWindow.id)
+    }
+
+    static func `import`(openWindow: OpenWindowAction) {
+        let center = AppServices.shared.backup
+        guard let url = center.chooseImportFile() else { return }
+        open(url, openWindow: openWindow)
+    }
+
+    static func open(_ url: URL, openWindow: OpenWindowAction) {
+        openWindow(id: BackupWindow.id)
+        Task { await AppServices.shared.backup.open(url) }
     }
 }
 
@@ -382,6 +429,12 @@ struct AppCommands: Commands {
             Button("Disconnect") { session?.disconnect() }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
                 .disabled(session?.workspace == nil)
+        }
+        CommandGroup(replacing: .importExport) {
+            Button("Export Settings and Knowledge…") { BackupCommands.export(openWindow: openWindow) }
+                .disabled(AppServices.shared.backup.isBusy)
+            Button("Import Settings and Knowledge…") { BackupCommands.import(openWindow: openWindow) }
+                .disabled(AppServices.shared.backup.isBusy)
         }
         CommandGroup(after: .textEditing) {
             Button("Format SQL") { session?.workspace?.selectedSQL?.formatSQL() }

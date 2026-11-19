@@ -153,15 +153,35 @@ public struct ConnectionProfile: Codable, Identifiable, Hashable, Sendable {
                                        allowPublicKeyRetrieval: allowPublicKeyRetrieval, serverPublicKeyPEM: publicKey)
     }
 
+    /// Certificate and key files are small; anything larger is not one.
+    static let maximumKeyFileBytes = 1 << 20
+
+    /// Reads a certificate or key file (`~/…` expands to this Mac's home, as imported profiles store such paths). Only a
+    /// regular file of at most 1 MB is read: a path naming a device or a pipe (`/dev/zero`, a FIFO), for example in an
+    /// imported profile, must neither block the connection nor exhaust memory. The file is opened without blocking and
+    /// checked through its descriptor, so it cannot be swapped in between.
     static func readFile(_ path: String, what: String) throws -> Data {
         let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
-        let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
-        guard size <= 1_048_576 else { throw MySQLError(.invalidArgument, "The \(what) file is larger than 1 MB") }
+        let descriptor = open(url.path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            throw MySQLError(.invalidArgument, "Could not read the \(what) file \(url.path): \(SecureFile.posixError().localizedDescription)")
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        var status = stat()
+        guard fstat(descriptor, &status) == 0, status.st_mode & S_IFMT == S_IFREG else {
+            throw MySQLError(.invalidArgument, "The \(what) file \(url.path) is not a regular file")
+        }
+        let tooLarge = MySQLError(.invalidArgument, "The \(what) file is larger than 1 MB")
+        guard status.st_size <= off_t(maximumKeyFileBytes) else { throw tooLarge }
+        let data: Data
         do {
-            return try Data(contentsOf: url)
+            data = try handle.read(upToCount: maximumKeyFileBytes + 1) ?? Data()
         } catch {
             throw MySQLError(.invalidArgument, "Could not read the \(what) file \(url.path): \(error.localizedDescription)")
         }
+        // The file may have grown since `fstat`.
+        guard data.count <= maximumKeyFileBytes else { throw tooLarge }
+        return data
     }
 
     /// Problems that prevent connecting, for inline form validation.
