@@ -22,11 +22,11 @@ public enum KnowledgeService {
     /// the projects linked to it (`scanner`), and saves the merged knowledge under the lock.
     public static func refresh(_ key: DatabaseKey, source: some KnowledgeSchemaSource, store: KnowledgeStore, history: [QueryHistoryEntry],
                                infer: KnowledgeToolSettings.Inference, now: Date, scanner: CodeScanner? = CodeScanner(),
-                               home: URL = FileManager.default.homeDirectoryForCurrentUser) async throws -> KnowledgeRefresher.Report {
+                               home: URL = FileManager.default.homeDirectoryForCurrentUser, partial: Bool = false) async throws -> KnowledgeRefresher.Report {
         let schema = try await KnowledgeExtractor.extract(database: key.database, from: source)
         var preview = try store.database(key) ?? DatabaseKnowledge(key: key)
         var scratch = KnowledgeRefresher.Report()
-        KnowledgeRefresher.updateTables(schema, in: &preview, now: now, report: &scratch)
+        KnowledgeRefresher.updateTables(schema, in: &preview, now: now, report: &scratch, partial: partial)
         var machine = infer(KnowledgeInferenceInput(schema: schema, knowledge: preview, history: history, now: now))
         if let scanner {
             let projects = try linkedProjects(of: key, store: store, home: home)
@@ -35,7 +35,7 @@ public enum KnowledgeService {
             }
         }
         let report = try store.updateDatabase(key) { knowledge in
-            KnowledgeRefresher.apply(schema, machineRelationships: machine, to: &knowledge, now: now)
+            KnowledgeRefresher.apply(schema, machineRelationships: machine, to: &knowledge, now: now, partial: partial)
         }
         if let identifier = schema.serverIdentifier {
             try store.updateIndex { index in

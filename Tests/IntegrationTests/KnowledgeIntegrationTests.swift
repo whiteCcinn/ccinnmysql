@@ -61,15 +61,60 @@ struct KnowledgeIntegrationTests {
         _ = try await admin.execute("DROP USER IF EXISTS 'kb_reader'@'%'")
         _ = try await admin.execute("CREATE USER 'kb_reader'@'%' IDENTIFIED BY 'kb-reader-pw'")
         _ = try await admin.execute("GRANT SELECT ON shop.orders TO 'kb_reader'@'%'")
+        _ = try await admin.execute("GRANT SELECT (id, name) ON shop.customers TO 'kb_reader'@'%'")
         do {
             var configuration = IntegrationEnvironment.rootConfiguration(target)
             configuration.username = "kb_reader"
             configuration.password = "kb-reader-pw"
             let reader = try await MySQLClient.connect(configuration, poolSize: 1)
-            #expect(try await KnowledgeMCP.liveVisibility(reader, "shop") == ["orders"])
+            let visibility = try #require(try await KnowledgeMCP.liveVisibility(reader, "shop"))
+            #expect(visibility.tables == ["orders", "customers"])
+            #expect(visibility.contains("customers", column: "name") && !visibility.contains("customers", column: "email"), "column grants are honoured")
+            #expect(visibility.contains("orders", column: "amount"))
             #expect(try await KnowledgeMCP.liveVisibility(reader, "mysql") == nil, "the server's own databases are never shown")
             #expect(try await KnowledgeMCP.liveVisibility(admin, "performance_schema") == nil)
             await reader.close()
+        } catch {
+            _ = try? await admin.execute("DROP USER IF EXISTS 'kb_reader'@'%'")
+            throw error
+        }
+        _ = try await admin.execute("DROP USER IF EXISTS 'kb_reader'@'%'")
+    }
+
+    // An AI refresh through a restricted account sees part of the database: it must not drop what the account cannot
+    // see, nor shrink a table to the columns it may read.
+    @Test(arguments: IntegrationEnvironment.targets)
+    func aRestrictedAccountsRefreshKeepsWhatItCannotSee(target: Target) async throws {
+        let admin = try await MySQLClient.connect(IntegrationEnvironment.rootConfiguration(target), poolSize: 4)
+        defer { Task { await admin.close() } }
+        try await DemoSchema.load(into: admin)
+        let store = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: store.directory) }
+        let key = DatabaseKey(cluster: ClusterKey(rawValue: "my://127.0.0.1:\(target.port)"), catalog: "def", database: "shop")
+        _ = try await KnowledgeService.refresh(key, source: admin, store: store, history: [], infer: KnowledgeInference.machineRelationships, now: Date(),
+                                               scanner: nil)
+        let full = try #require(try store.database(key))
+        _ = try await admin.execute("DROP USER IF EXISTS 'kb_reader'@'%'")
+        _ = try await admin.execute("CREATE USER 'kb_reader'@'%' IDENTIFIED BY 'kb-reader-pw'")
+        _ = try await admin.execute("GRANT SELECT ON shop.orders TO 'kb_reader'@'%'")
+        _ = try await admin.execute("GRANT SELECT (id, name) ON shop.customers TO 'kb_reader'@'%'")
+        do {
+            var configuration = IntegrationEnvironment.rootConfiguration(target)
+            configuration.username = "kb_reader"
+            configuration.password = "kb-reader-pw"
+            let reader = try await MySQLClient.connect(configuration, poolSize: 4)
+            let report = try await KnowledgeService.refresh(key, source: reader, store: store, history: [], infer: KnowledgeInference.machineRelationships,
+                                                            now: Date(), scanner: nil, partial: true)
+            await reader.close()
+            let after = try #require(try store.database(key))
+            func table(_ knowledge: DatabaseKnowledge, _ name: String) -> TableFacts? { knowledge.tables.first { $0.name == name } }
+            #expect(after.tables.map(\.name) == full.tables.map(\.name), "nothing the account cannot see is dropped")
+            #expect(after.tables.allSatisfy { $0.state != .dropped })
+            #expect(table(after, "customers")?.columns.map(\.name) == table(full, "customers")?.columns.map(\.name), "nor shrunk to its readable columns")
+            #expect(table(after, "customers")?.fingerprint == table(full, "customers")?.fingerprint)
+            #expect(report.tables.dropped == 0 && report.relationships.nowStale == 0 && report.relationships.removed == 0)
+            let declared = full.relationships.filter { $0.evidence.contains { $0.source == .declared } }.map(\.id)
+            #expect(Set(declared).isSubset(of: Set(after.relationships.map(\.id))), "declared keys outside the account's view stay")
         } catch {
             _ = try? await admin.execute("DROP USER IF EXISTS 'kb_reader'@'%'")
             throw error

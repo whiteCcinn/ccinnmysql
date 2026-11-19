@@ -4,7 +4,7 @@ import MySQLKit
 
 /// What the knowledge tools of the MCP server need besides a connection.
 public struct KnowledgeToolSettings: Sendable {
-    public typealias VisibilityCheck = @Sendable (MySQLClient, String) async throws -> Set<String>?
+    public typealias VisibilityCheck = @Sendable (MySQLClient, String) async throws -> KnowledgeVisibility?
     public typealias Inference = @Sendable (KnowledgeInferenceInput) -> [Relationship]
 
     public var store: KnowledgeStore
@@ -13,7 +13,7 @@ public struct KnowledgeToolSettings: Sendable {
     /// `--no-knowledge-writes`: no knowledge write tools for any connection.
     public var writesDisabled: Bool
     public var home: URL
-    /// The tables of a database the connection's account can see; `nil` when it cannot see the database.
+    /// The tables and columns of a database the connection's account can read; `nil` when it cannot see the database.
     public var visibleTables: VisibilityCheck
     public var confidence: @Sendable (Relationship) -> Int
     /// Relationships from machine sources (declared, definition, history, naming) for a fresh extraction.
@@ -33,6 +33,34 @@ public struct KnowledgeToolSettings: Sendable {
         self.infer = infer
         self.now = now
     }
+}
+
+/// What one account may read in one database: each visible table or view with the columns it may read (lower-cased;
+/// `nil` for every column).
+public struct KnowledgeVisibility: Sendable, Equatable {
+    public var columns: [String: Set<String>?]
+
+    public init(columns: [String: Set<String>?]) {
+        self.columns = columns
+    }
+
+    /// Every column of these tables is readable.
+    public init(tables: Set<String>) {
+        var columns: [String: Set<String>?] = [:]
+        for table in tables { columns[table] = .some(nil) }
+        self.columns = columns
+    }
+
+    public var tables: Set<String> { Set(columns.keys) }
+
+    public func contains(_ table: String) -> Bool { columns[table] != nil }
+
+    public func contains(_ table: String, column: String) -> Bool {
+        guard let entry = columns[table] else { return false }
+        guard let readable = entry else { return true }
+        return readable.contains(column.lowercased())
+    }
+
 }
 
 /// Inputs of relationship inference for one refresh.
@@ -73,11 +101,12 @@ public enum KnowledgeMCP {
 
     /// The account can see the database (the server lists only what it may use) and these tables and views in it. The
     /// server's own databases are never shown.
-    public static let liveVisibility: KnowledgeToolSettings.VisibilityCheck = { (client: MySQLClient, database: String) async throws -> Set<String>? in
+    public static let liveVisibility: KnowledgeToolSettings.VisibilityCheck = { (client: MySQLClient, database: String) async throws -> KnowledgeVisibility? in
         guard !KnowledgeExtractor.isSystemDatabase(database) else { return nil }
         guard try await client.schemas().contains(where: { $0.name == database }) else { return nil }
-        let objects = try await client.objects(schema: database).objects
-        return Set(objects.filter { $0.kind == .table || $0.kind == .view }.map(\.name))
+        // information_schema.COLUMNS lists only the columns this account may read (column grants included).
+        let columns = try await client.columnsByTable(schema: database)
+        return KnowledgeVisibility(columns: columns.mapValues { (list: [ColumnInfo]) -> Set<String>? in Set(list.map { $0.name.lowercased() }) })
     }
 
     // MARK: Definitions
@@ -170,24 +199,54 @@ public enum KnowledgeMCP {
     /// Only what the account can see: tables outside `visible` disappear, with everything that mentions them.
     /// Relationships to other databases stay only when `visibleOther` lists their table.
     public static func filter(_ knowledge: DatabaseKnowledge, visible: Set<String>, visibleOther: [String: Set<String>] = [:]) -> DatabaseKnowledge {
+        filter(knowledge, visibility: KnowledgeVisibility(tables: visible), visibilityOther: visibleOther.mapValues { KnowledgeVisibility(tables: $0) })
+    }
+
+    /// Only what the account can read: tables it cannot see and columns it cannot read disappear, with every key, note,
+    /// term mapping and relationship that mentions them. Relationships to other databases stay only when
+    /// `visibilityOther` shows their table and columns.
+    public static func filter(_ knowledge: DatabaseKnowledge, visibility: KnowledgeVisibility,
+                              visibilityOther: [String: KnowledgeVisibility] = [:]) -> DatabaseKnowledge {
         var filtered = knowledge
-        filtered.tables = knowledge.tables.filter { visible.contains($0.name) }
+        filtered.tables = knowledge.tables.compactMap { (table: TableFacts) -> TableFacts? in
+            guard visibility.contains(table.name) else { return nil }
+            var table = table
+            let readable = { (column: String) -> Bool in visibility.contains(table.name, column: column) }
+            table.columns = table.columns.filter { readable($0.name) }
+            table.keys.primary = table.keys.primary.allSatisfy(readable) ? table.keys.primary : []
+            table.keys.unique = table.keys.unique.filter { $0.allSatisfy(readable) }
+            table.keys.partition = table.keys.partition.allSatisfy(readable) ? table.keys.partition : []
+            table.keys.sort = table.keys.sort.allSatisfy(readable) ? table.keys.sort : []
+            table.keys.distribution = table.keys.distribution.allSatisfy(readable) ? table.keys.distribution : []
+            return table
+        }
         func isVisible(_ end: Relationship.End) -> Bool {
-            if let database = end.database { return visibleOther[database]?.contains(end.table) ?? false }
-            return visible.contains(end.table)
+            let scope: KnowledgeVisibility? = end.database.map { visibilityOther[$0] } ?? visibility
+            guard let scope, scope.contains(end.table) else { return false }
+            return end.columns.allSatisfy { scope.contains(end.table, column: $0) }
         }
         filtered.relationships = knowledge.relationships.filter { isVisible($0.from) && isVisible($0.to) }
-        filtered.notes = knowledge.notes.filter { visible.contains($0.table) }
+        filtered.notes = knowledge.notes.filter { (note: Note) -> Bool in
+            guard visibility.contains(note.table) else { return false }
+            return note.column.map { visibility.contains(note.table, column: $0) } ?? true
+        }
         filtered.terms = knowledge.terms.compactMap { (term: Term) -> Term? in
             var term = term
             let original = term.mapsTo
-            term.mapsTo = original.filter { visible.contains($0.table) }
-            // A term about hidden tables only would reveal them; one mapped to no table is plain glossary.
+            term.mapsTo = original.filter { (mapping: Term.Mapping) -> Bool in
+                guard visibility.contains(mapping.table) else { return false }
+                if let column = mapping.column, !visibility.contains(mapping.table, column: column) { return false }
+                // An expression could name a column the account cannot read.
+                guard mapping.expression != nil else { return true }
+                let stored = knowledge.table(named: mapping.table)?.columns ?? []
+                return stored.allSatisfy { visibility.contains(mapping.table, column: $0.name) }
+            }
+            // A term about hidden tables or columns only would reveal them; one mapped to no table is plain glossary.
             return !original.isEmpty && term.mapsTo.isEmpty ? nil : term
         }
         filtered.areas = knowledge.areas.map { (area: SubjectArea) -> SubjectArea in
             var area = area
-            area.tables = area.tables.filter { visible.contains($0) }
+            area.tables = area.tables.filter { visibility.contains($0) }
             return area
         }.filter { !$0.tables.isEmpty }
         return filtered

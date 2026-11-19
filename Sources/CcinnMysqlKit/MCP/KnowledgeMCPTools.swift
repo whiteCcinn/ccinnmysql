@@ -4,19 +4,19 @@ import MySQLKit
 /// What an account can see, per profile and database, for five minutes: knowledge built through one account never
 /// shows another account tables it cannot read.
 public actor KnowledgeVisibilityCache {
-    private var entries: [String: (at: ContinuousClock.Instant, tables: Set<String>?)] = [:]
+    private var entries: [String: (at: ContinuousClock.Instant, visibility: KnowledgeVisibility?)] = [:]
     private let lifetime: Duration
 
     public init(lifetime: Duration = .seconds(300)) {
         self.lifetime = lifetime
     }
 
-    func tables(profile: UUID, database: String, load: () async throws -> Set<String>?) async throws -> Set<String>? {
+    func visibility(profile: UUID, database: String, load: () async throws -> KnowledgeVisibility?) async throws -> KnowledgeVisibility? {
         let key = profile.uuidString + "\u{1F}" + database
-        if let entry = entries[key], ContinuousClock.now - entry.at < lifetime { return entry.tables }
-        let tables = try await load()
-        entries[key] = (ContinuousClock.now, tables)
-        return tables
+        if let entry = entries[key], ContinuousClock.now - entry.at < lifetime { return entry.visibility }
+        let visibility = try await load()
+        entries[key] = (ContinuousClock.now, visibility)
+        return visibility
     }
 }
 
@@ -147,28 +147,28 @@ extension MySQLMCPTools {
         return index.clusters.first { $0.key == derived || $0.aliases.contains(derived) }?.key ?? derived
     }
 
-    func visible(_ database: String, _ client: MySQLClient, _ profile: ConnectionProfile, _ settings: KnowledgeToolSettings) async throws -> Set<String> {
-        let tables = try await visibilityCache.tables(profile: profile.id, database: database) { try await settings.visibleTables(client, database) }
-        guard let tables else {
+    func visible(_ database: String, _ client: MySQLClient, _ profile: ConnectionProfile, _ settings: KnowledgeToolSettings) async throws -> KnowledgeVisibility {
+        let visibility = try await visibilityCache.visibility(profile: profile.id, database: database) { try await settings.visibleTables(client, database) }
+        guard let visibility else {
             throw MCPToolError("Database “\(database)” does not exist on this connection, or its account cannot see it.")
         }
-        return tables
+        return visibility
     }
 
     /// The stored knowledge (built on first use), limited to what this connection's account can see.
     func visibleKnowledge(_ key: DatabaseKey, _ client: MySQLClient, _ profile: ConnectionProfile,
                           _ settings: KnowledgeToolSettings) async throws -> DatabaseKnowledge {
-        let tables = try await visible(key.database, client, profile, settings)
+        let visibility = try await visible(key.database, client, profile, settings)
         if try settings.store.database(key) == nil {
             _ = try await refreshKnowledge(key, client, settings, mineHistory: true)
         }
         guard let stored = try settings.store.database(key) else { throw MCPToolError("No knowledge could be built for \(key.database).") }
-        var visibleOther: [String: Set<String>] = [:]
+        var visibilityOther: [String: KnowledgeVisibility] = [:]
         let others = Set(stored.relationships.flatMap { [$0.from.database, $0.to.database].compactMap { $0 } })
         for database in others.sorted() {
-            visibleOther[database] = (try? await visible(database, client, profile, settings)) ?? []
+            visibilityOther[database] = (try? await visible(database, client, profile, settings)) ?? KnowledgeVisibility(columns: [:])
         }
-        return KnowledgeMCP.filter(stored, visible: tables, visibleOther: visibleOther)
+        return KnowledgeMCP.filter(stored, visibility: visibility, visibilityOther: visibilityOther)
     }
 
     func otherDatabaseTables(_ items: [JSONValue], key: DatabaseKey, client: MySQLClient, profile: ConnectionProfile,
@@ -177,9 +177,10 @@ extension MySQLMCPTools {
         let databases = Set(items.compactMap { $0.objectValue?["to_database"]?.stringValue }.filter { $0 != key.database })
         for database in databases.sorted() {
             let otherKey = DatabaseKey(cluster: key.cluster, catalog: key.catalog, database: database)
-            let tables = try await visible(database, client, profile, settings)
+            let visibility = try await visible(database, client, profile, settings)
             if try settings.store.database(otherKey) == nil { _ = try await refreshKnowledge(otherKey, client, settings, mineHistory: false) }
-            result[database] = (try settings.store.database(otherKey)?.tables ?? []).filter { tables.contains($0.name) }
+            let stored = try settings.store.database(otherKey) ?? DatabaseKnowledge(key: otherKey)
+            result[database] = KnowledgeMCP.filter(stored, visibility: visibility).tables
         }
         return result
     }
@@ -191,7 +192,9 @@ extension MySQLMCPTools {
         let history = mineHistory
             ? await KnowledgeService.history(for: key.cluster, profiles: resolver.profiles, directory: settings.historyDirectory, store: settings.store)
             : []
-        return try await KnowledgeService.refresh(key, source: client, store: settings.store, history: history, infer: settings.infer, now: settings.now())
+        // Partial: an AI session's account may see less than the knowledge holds; it never drops what it cannot see.
+        return try await KnowledgeService.refresh(key, source: client, store: settings.store, history: history, infer: settings.infer, now: settings.now(),
+                                                  partial: true)
     }
 
     // MARK: Payloads
@@ -214,12 +217,12 @@ extension MySQLMCPTools {
         var rows: [JSONValue] = []
         var hidden = 0
         for entry in entries.sorted(by: { $0.key.database < $1.key.database }) {
-            guard let tables = try? await visible(entry.key.database, client, profile, settings),
+            guard let visibility = try? await visible(entry.key.database, client, profile, settings),
                   let stored = try settings.store.database(entry.key) else {
                 hidden += 1
                 continue
             }
-            let knowledge = KnowledgeMCP.filter(stored, visible: tables)
+            let knowledge = KnowledgeMCP.filter(stored, visibility: visibility)
             let live = knowledge.tables.filter { $0.state != .dropped }
             rows.append(["database": .string(entry.key.database), "catalog": .string(entry.key.catalog), "tables": .int(Int64(live.count)),
                          "changed": .int(Int64(live.filter { $0.state == .changed }.count)),
