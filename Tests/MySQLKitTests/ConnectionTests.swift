@@ -197,17 +197,16 @@ struct ConnectionTests {
         _ = try? await first.value
     }
 
-    @Test func handshakeTimeoutIsReported() async {
+    // The 1 s deadline fires instead of the connect hanging; a hang fails at the time limit. Not a wall-clock bound: on
+    // a 3-core CI runner the deadline's wake-up waits for a free thread while CPU-heavy suites run (11 s with 758
+    // tests, 19 s with 804, against a 15 s bound).
+    @Test(.timeLimit(.minutes(1))) func handshakeTimeoutIsReported() async {
         // A server that accepts TCP but never sends a greeting.
         let silent = SilentTransport()
         let config = ConnectionConfiguration(endpoint: Endpoint(host: "fake"), username: "u", connectTimeout: 1)
-        let started = ContinuousClock.now
         await #expect {
             _ = try await MySQLConnection.connect(config) { _, _ in silent }
         } throws: { ($0 as? MySQLError)?.kind == .timeout }
-        // The 1 s deadline fired instead of the connect hanging. Generous bound: wall-clock time on a busy CI
-        // runner includes waiting for a thread while other tests run.
-        #expect(ContinuousClock.now - started < .seconds(15))
     }
 }
 
