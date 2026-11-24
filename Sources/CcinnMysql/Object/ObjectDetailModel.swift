@@ -59,6 +59,13 @@ final class ObjectDetailModel {
     var ddl: Loadable<String> = .idle
     var preview: Loadable<ResultSet> = .idle
     var previewID = UUID()
+    /// The Data tab's position: sort, page, and whether pages are read by key.
+    private(set) var pager: TablePager?
+    /// A page is being read; the page on screen stays until it arrives.
+    private(set) var isLoadingPage = false
+    /// The table's identifying keys (primary key first), read once per load.
+    private var identifyingKeys: [[String]]?
+    private var pageLoad: UInt64 = 0
     /// Whether the preview rows can be edited, and how.
     var editEligibility: RowEditEligibility?
     var pendingEdit: PendingRowEdit?
@@ -103,6 +110,8 @@ final class ObjectDetailModel {
         ddl = .idle
         preview = .idle
         editEligibility = nil
+        pager = nil
+        identifyingKeys = nil
         if let refreshed = workspace.object(database: object.schema, name: object.name), refreshed.kind == object.kind { object = refreshed }
         load(section)
     }
@@ -153,24 +162,71 @@ final class ObjectDetailModel {
         run({ self.ddl = $0 }) { try await self.client.ddl(of: object) }
     }
 
+    /// The first page, in the current sort (first load, Try Again).
     func loadPreview() {
+        let sort = pager?.sort
+        loadPage(replacing: true) { $0.first(sortedBy: sort) }
+    }
+
+    /// The page on screen again.
+    func reloadPage() { loadPage { $0.reload() } }
+    func nextPage() { loadPage { $0.next() } }
+    func previousPage() { loadPage { $0.previous() } }
+    func firstPage() { loadPage { $0.first(sortedBy: $0.sort) } }
+
+    /// Sorts on the server by `column` (`nil`: the table's order) and shows the first page.
+    func sortPreview(by sort: TablePager.Sort?) { loadPage { $0.first(sortedBy: sort) } }
+
+    /// Reads the page `choose` picks. The page on screen stays until the new one arrives (`replacing` shows progress
+    /// instead); only the newest request may show its page.
+    private func loadPage(replacing: Bool = false, _ choose: @escaping (TablePager) -> TablePager.Request?) {
         let object = object
         let token = generation
-        run({ [weak self] state in
-            self?.preview = state
-            self?.previewID = UUID()
-        }) {
-            let result = try await self.client.preview(object, limit: 200)
-            if object.kind == .table {
-                let keys = (try? await self.client.identifyingKeys(schema: object.schema, table: object.name)) ?? []
-                if token == self.generation {
-                    self.editEligibility = RowEditor.eligibility(columns: result.columns, keys: keys, isBaseTable: true)
-                }
-            } else {
-                self.editEligibility = .readOnly("Only base tables can be edited.")
-            }
-            return result
+        pageLoad &+= 1
+        let load = pageLoad
+        if replacing || preview.value == nil {
+            preview = .loading
+            previewID = UUID()
         }
+        isLoadingPage = true
+        Task {
+            defer { if load == self.pageLoad { self.isLoadingPage = false } }
+            do {
+                let keys = try await self.keys(of: object)
+                var pager = self.pager ?? TablePager(table: object.qualifiedName, keyColumns: keys.first ?? [])
+                guard let request = choose(pager) else { return }
+                let result = try await self.client.previewPage(request.sql, maxRows: pager.pageSize + 1)
+                guard token == self.generation, load == self.pageLoad else { return }
+                let rows = pager.apply(request, columns: result.columns, rows: result.rows)
+                self.pager = pager
+                self.editEligibility = object.kind == .table
+                    ? RowEditor.eligibility(columns: result.columns, keys: keys, isBaseTable: true)
+                    : .readOnly("Only base tables can be edited.")
+                self.preview = .loaded(ResultSet(columns: result.columns, rows: rows, warnings: result.warnings, status: result.status))
+                self.previewID = UUID()
+            } catch {
+                guard token == self.generation, load == self.pageLoad else { return }
+                if self.preview.value == nil {
+                    self.preview = .failed(describe(error))
+                } else {
+                    self.workspace.showToast(describe(error), isError: true)
+                }
+            }
+        }
+    }
+
+    /// Primary key first, then NOT NULL unique keys; none for views.
+    private func keys(of object: DatabaseObject) async throws -> [[String]] {
+        if let identifyingKeys { return identifyingKeys }
+        let keys = object.kind == .table ? ((try? await client.identifyingKeys(schema: object.schema, table: object.name)) ?? []) : []
+        identifyingKeys = keys
+        return keys
+    }
+
+    /// The Data tab's page as a query in the editor.
+    func openPageInEditor() {
+        let sql = (pager ?? TablePager(table: object.qualifiedName, keyColumns: identifyingKeys?.first ?? [])).editorSQL
+        workspace.openSQL(text: sql + ";", database: object.schema, run: true)
     }
 
     // MARK: Editing
@@ -196,8 +252,7 @@ final class ObjectDetailModel {
             do {
                 try await client.applyRowEdit(edit.sql)
                 workspace.showToast("Row updated")
-                generation &+= 1
-                loadPreview()
+                reloadPage()
             } catch {
                 workspace.showToast(describe(error), isError: true)
             }

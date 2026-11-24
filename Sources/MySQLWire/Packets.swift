@@ -187,18 +187,28 @@ public struct ColumnDefinition: Sendable, Equatable {
         decimals = try reader.readUInt8()
     }
 
-    public init(name: String, type: ColumnType, table: String = "", schema: String = "") {
+    public init(name: String, type: ColumnType, table: String = "", schema: String = "", flags: UInt16 = 0, characterSet: UInt16 = 33) {
         self.schema = schema
         self.table = table
         originalTable = table
         self.name = name
         originalName = name
-        characterSet = 33
+        self.characterSet = characterSet
         length = 0
         self.type = type
-        flags = 0
+        self.flags = flags
         decimals = 0
     }
+
+    public static let notNullFlag: UInt16 = 0x0001
+    public static let enumFlag: UInt16 = 0x0100
+    public static let setFlag: UInt16 = 0x0800
+
+    /// The column is declared NOT NULL.
+    public var isNotNull: Bool { flags & Self.notNullFlag != 0 }
+
+    /// ENUM or SET: sorted by member position, compared as text.
+    public var isEnumOrSet: Bool { flags & (Self.enumFlag | Self.setFlag) != 0 || type == .enumeration || type == .set }
 }
 
 public enum TextRow {
