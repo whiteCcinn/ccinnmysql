@@ -169,4 +169,21 @@ struct TablePagerIntegrationTests {
         #expect(walked.forward == (try await truth(client, table, order: ["id"], ascending: true)))
         #expect(walked.backward == Array(walked.pages.dropLast()))
     }
+
+    @Test(arguments: IntegrationEnvironment.targets)
+    func aFilteredWalkReadsEveryMatchingRowOnce(target: IntegrationEnvironment.Target) async throws {
+        let client = try await MySQLClient.connect(IntegrationEnvironment.rootConfiguration(target), poolSize: 2)
+        defer { Task { _ = try? await client.query("DROP DATABASE IF EXISTS \(Self.database)"); await client.close() } }
+        try await prepare(client)
+        let filter = try #require(try TableFilter.parse("WHERE grp IN (1, 3) OR name = 'n4' -- a few groups").get())
+        var pager = TablePager(table: Self.table, keyColumns: ["id"], filter: filter, pageSize: 50)
+        let sort = TablePager.Sort(column: "name", ascending: false)
+        let walked = try await walk(client, &pager, sort: sort)
+        #expect(pager.seeksByKey)
+        let expected = ids(try await client.previewPage("SELECT * FROM \(Self.table) WHERE \(filter.sql) ORDER BY `name` DESC, `id` DESC",
+                                                       maxRows: 10_000))
+        #expect(!expected.isEmpty && expected.count < Self.rowCount)
+        #expect(walked.forward == expected)
+        #expect(walked.backward == Array(walked.pages.dropLast()))
+    }
 }

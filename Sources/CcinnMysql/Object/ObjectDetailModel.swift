@@ -63,6 +63,9 @@ final class ObjectDetailModel {
     private(set) var pager: TablePager?
     /// A page is being read; the page on screen stays until it arrives.
     private(set) var isLoadingPage = false
+    /// The Data tab's filter on the page on screen; why the last one entered was refused (by the check or the server).
+    private(set) var dataFilter: TableFilter?
+    private(set) var filterProblem: String?
     /// The table's identifying keys (primary key first) and, without one, the columns that break ties; read once.
     private var identifyingKeys: [[String]]?
     private var tieBreakers: [String] = []
@@ -181,9 +184,23 @@ final class ObjectDetailModel {
     /// Sorts on the server by `column` (`nil`: the table's order) and shows the first page.
     func sortPreview(by sort: TablePager.Sort?) { loadPage { $0.first(sortedBy: sort) } }
 
+    /// Shows the first page of the rows matching `text` (empty: every row), in the current sort. The filter takes
+    /// effect when its page arrives; a refused or failing one leaves the page on screen and says why.
+    func applyFilter(_ text: String) {
+        switch TableFilter.parse(text) {
+        case let .failure(refusal):
+            filterProblem = refusal.message
+        case let .success(filter):
+            filterProblem = nil
+            let sort = pager?.sort
+            loadPage(filter: .some(filter)) { $0.first(sortedBy: sort) }
+        }
+    }
+
     /// Reads the page `choose` picks. The page on screen stays until the new one arrives (`replacing` shows progress
     /// instead); only the newest request may show its page.
-    private func loadPage(replacing: Bool = false, _ choose: @escaping (TablePager) -> TablePager.Request?) {
+    /// `filter`: start over with this filter (`.some(nil)`: none) instead of the page on screen's.
+    private func loadPage(replacing: Bool = false, filter: TableFilter?? = nil, _ choose: @escaping (TablePager) -> TablePager.Request?) {
         let object = object
         let token = generation
         pageLoad &+= 1
@@ -199,12 +216,17 @@ final class ObjectDetailModel {
             defer { if load == self.pageLoad { self.isLoadingPage = false } }
             do {
                 let keys = try await self.keys(of: object)
-                var pager = self.pager ?? TablePager(table: object.qualifiedName, keyColumns: keys.first ?? [], tieBreakers: self.tieBreakers)
+                let fresh = { (filter: TableFilter?) in
+                    TablePager(table: object.qualifiedName, keyColumns: keys.first ?? [], tieBreakers: self.tieBreakers, filter: filter)
+                }
+                var pager = filter.map(fresh) ?? self.pager ?? fresh(self.dataFilter)
                 guard let request = choose(pager) else { return }
                 let result = try await self.client.previewPage(request.sql, maxRows: pager.pageSize + 1)
                 guard token == self.generation, load == self.pageLoad else { return }
                 let rows = pager.apply(request, columns: result.columns, rows: result.rows, truncated: result.isTruncated)
                 self.pager = pager
+                self.dataFilter = pager.filter
+                if filter != nil { self.filterProblem = nil }
                 // Everything before the page went away meanwhile: show the start of the table.
                 if rows.isEmpty, request.readsBackward { return self.firstPage() }
                 self.editEligibility = object.kind == .table
@@ -217,6 +239,10 @@ final class ObjectDetailModel {
                 return
             } catch {
                 guard token == self.generation, load == self.pageLoad else { return }
+                if filter != nil {
+                    self.filterProblem = describe(error)
+                    if self.preview.value != nil { return }
+                }
                 if self.preview.value == nil {
                     self.preview = .failed(describe(error))
                 } else {

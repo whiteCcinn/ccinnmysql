@@ -223,4 +223,18 @@ struct TablePagerTests {
         #expect(pager.firstRow == 1)
         #expect(!pager.hasPrevious)
     }
+
+    @Test func aFilterNarrowsEveryPage() throws {
+        let filter = try #require(try TableFilter.parse("city = 'KL' OR total > 1").get())
+        var pager = TablePager(table: Self.table, keyColumns: ["id"], filter: filter)
+        let first = pager.first(sortedBy: nil)
+        #expect(first.sql == "SELECT * FROM `shop`.`orders` WHERE (city = 'KL' OR total > 1) ORDER BY `id` ASC LIMIT 201")
+        _ = pager.apply(first, columns: Self.columns, rows: Self.rows(201))
+        #expect(try #require(pager.next()).sql
+            == "SELECT * FROM `shop`.`orders` WHERE (city = 'KL' OR total > 1) AND (`id` > 200) ORDER BY `id` ASC LIMIT 201")
+        #expect(pager.editorSQL == "SELECT * FROM `shop`.`orders` WHERE (city = 'KL' OR total > 1) ORDER BY `id` ASC LIMIT 200")
+        let commented = try #require(try TableFilter.parse("id > 5 -- recent").get())
+        #expect(TablePager(table: Self.table, keyColumns: [], filter: commented).first(sortedBy: nil).sql
+            == "SELECT * FROM `shop`.`orders` WHERE (id > 5 -- recent\n) LIMIT 201")
+    }
 }

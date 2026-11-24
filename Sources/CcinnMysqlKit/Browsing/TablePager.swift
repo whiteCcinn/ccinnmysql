@@ -38,6 +38,8 @@ public struct TablePager: Sendable, Equatable {
     public let keyColumns: [String]
     /// Without a key: the columns that break ties after the sort column, so OFFSET pages stay stable.
     public let tieBreakers: [String]
+    /// The user's condition, ANDed into every page's query.
+    public let filter: TableFilter?
     public let pageSize: Int
     let noBackslashEscapes: Bool
 
@@ -56,10 +58,12 @@ public struct TablePager: Sendable, Equatable {
     /// longer strings cannot be sought by.
     static let maxSortLength: UInt32 = 1_024
 
-    public init(table: String, keyColumns: [String], tieBreakers: [String] = [], pageSize: Int = 200, noBackslashEscapes: Bool = false) {
+    public init(table: String, keyColumns: [String], tieBreakers: [String] = [], filter: TableFilter? = nil, pageSize: Int = 200,
+                noBackslashEscapes: Bool = false) {
         self.table = table
         self.keyColumns = keyColumns
         self.tieBreakers = tieBreakers
+        self.filter = filter
         self.pageSize = max(1, pageSize)
         self.noBackslashEscapes = noBackslashEscapes
     }
@@ -73,7 +77,8 @@ public struct TablePager: Sendable, Equatable {
     /// The page on screen as a query for the editor: an offset, so no values need escaping for its session.
     public var editorSQL: String {
         let order = orderColumns(sort: sort)
-        return "SELECT * FROM \(table)" + Self.orderBy(order, ascending: sort?.ascending ?? true) + " LIMIT \(pageSize)"
+        return "SELECT * FROM \(table)" + (filter.map { " WHERE " + $0.sql } ?? "") + Self.orderBy(order, ascending: sort?.ascending ?? true)
+            + " LIMIT \(pageSize)"
             + (firstRowIndex > 0 ? " OFFSET \(firstRowIndex)" : "")
     }
 
@@ -161,8 +166,13 @@ public struct TablePager: Sendable, Equatable {
         let order = orderColumns(sort: sort)
         let ascending = sort?.ascending ?? true
         let readsAscending = backward ? !ascending : ascending
+        var conditions: [String] = filter.map { [$0.sql] } ?? []
+        if let values, let seek {
+            let condition = seekCondition(order, seek: seek, values: values, greater: readsAscending)
+            conditions.append(conditions.isEmpty ? condition : "(" + condition + ")")
+        }
         var query = "SELECT * FROM \(table)"
-        if let values, let seek { query += " WHERE " + seekCondition(order, seek: seek, values: values, greater: readsAscending) }
+        if !conditions.isEmpty { query += " WHERE " + conditions.joined(separator: " AND ") }
         query += Self.orderBy(order, ascending: readsAscending) + " LIMIT \(pageSize + 1)"
         if let offset { query += " OFFSET \(offset)" }
         return Request(sql: query, sort: sort, boundary: boundary, readsBackward: backward)
