@@ -187,14 +187,15 @@ public struct ColumnDefinition: Sendable, Equatable {
         decimals = try reader.readUInt8()
     }
 
-    public init(name: String, type: ColumnType, table: String = "", schema: String = "", flags: UInt16 = 0, characterSet: UInt16 = 33) {
+    public init(name: String, type: ColumnType, table: String = "", schema: String = "", flags: UInt16 = 0, characterSet: UInt16 = 33,
+                length: UInt32 = 0) {
         self.schema = schema
         self.table = table
         originalTable = table
         self.name = name
         originalName = name
         self.characterSet = characterSet
-        length = 0
+        self.length = length
         self.type = type
         self.flags = flags
         decimals = 0

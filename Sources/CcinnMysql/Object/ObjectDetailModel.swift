@@ -63,9 +63,11 @@ final class ObjectDetailModel {
     private(set) var pager: TablePager?
     /// A page is being read; the page on screen stays until it arrives.
     private(set) var isLoadingPage = false
-    /// The table's identifying keys (primary key first), read once per load.
+    /// The table's identifying keys (primary key first) and, without one, the columns that break ties; read once.
     private var identifyingKeys: [[String]]?
+    private var tieBreakers: [String] = []
     private var pageLoad: UInt64 = 0
+    private var pageTask: Task<Void, Never>?
     /// Whether the preview rows can be edited, and how.
     var editEligibility: RowEditEligibility?
     var pendingEdit: PendingRowEdit?
@@ -112,6 +114,8 @@ final class ObjectDetailModel {
         editEligibility = nil
         pager = nil
         identifyingKeys = nil
+        tieBreakers = []
+        pageTask?.cancel()
         if let refreshed = workspace.object(database: object.schema, name: object.name), refreshed.kind == object.kind { object = refreshed }
         load(section)
     }
@@ -189,21 +193,28 @@ final class ObjectDetailModel {
             previewID = UUID()
         }
         isLoadingPage = true
-        Task {
+        // A superseded read (a second click, a new sort) is cancelled: the server stops its statement.
+        pageTask?.cancel()
+        pageTask = Task {
             defer { if load == self.pageLoad { self.isLoadingPage = false } }
             do {
                 let keys = try await self.keys(of: object)
-                var pager = self.pager ?? TablePager(table: object.qualifiedName, keyColumns: keys.first ?? [])
+                var pager = self.pager ?? TablePager(table: object.qualifiedName, keyColumns: keys.first ?? [], tieBreakers: self.tieBreakers)
                 guard let request = choose(pager) else { return }
                 let result = try await self.client.previewPage(request.sql, maxRows: pager.pageSize + 1)
                 guard token == self.generation, load == self.pageLoad else { return }
-                let rows = pager.apply(request, columns: result.columns, rows: result.rows)
+                let rows = pager.apply(request, columns: result.columns, rows: result.rows, truncated: result.isTruncated)
                 self.pager = pager
+                // Everything before the page went away meanwhile: show the start of the table.
+                if rows.isEmpty, request.readsBackward { return self.firstPage() }
                 self.editEligibility = object.kind == .table
                     ? RowEditor.eligibility(columns: result.columns, keys: keys, isBaseTable: true)
                     : .readOnly("Only base tables can be edited.")
-                self.preview = .loaded(ResultSet(columns: result.columns, rows: rows, warnings: result.warnings, status: result.status))
+                self.preview = .loaded(ResultSet(columns: result.columns, rows: rows, isTruncated: result.isTruncated,
+                                                 warnings: result.warnings, status: result.status))
                 self.previewID = UUID()
+            } catch is CancellationError {
+                return
             } catch {
                 guard token == self.generation, load == self.pageLoad else { return }
                 if self.preview.value == nil {
@@ -215,10 +226,14 @@ final class ObjectDetailModel {
         }
     }
 
-    /// Primary key first, then NOT NULL unique keys; none for views.
+    /// Primary key first, then NOT NULL unique keys; none for views. Without a key, the columns that can break ties
+    /// in a sort (not TEXT, BLOB, JSON or spatial) are read too.
     private func keys(of object: DatabaseObject) async throws -> [[String]] {
         if let identifyingKeys { return identifyingKeys }
         let keys = object.kind == .table ? ((try? await client.identifyingKeys(schema: object.schema, table: object.name)) ?? []) : []
+        if keys.isEmpty, let columns = try? await client.columns(schema: object.schema, table: object.name) {
+            tieBreakers = columns.filter { TablePager.breaksTies(dataType: $0.dataType) }.map(\.name)
+        }
         identifyingKeys = keys
         return keys
     }
@@ -232,7 +247,13 @@ final class ObjectDetailModel {
     // MARK: Editing
 
     /// Prepares an UPDATE for one changed cell and asks for confirmation.
-    func proposeEdit(row: Int, column: Int, newValue: String?) {
+    func proposeEdit(_ request: CellEditRequest, newValue: String?) {
+        // The page changed while the editor was open: the row index now names another row.
+        guard request.resultID == previewID else {
+            return workspace.showToast("The page changed while you edited. Double-click the cell again.", isError: true)
+        }
+        let row = request.row
+        let column = request.column
         guard let plan = editEligibility?.plan, let result = preview.value, result.rows.indices.contains(row) else { return }
         let original = result.rows[row]
         guard column < original.count, original[column] != newValue else { return }

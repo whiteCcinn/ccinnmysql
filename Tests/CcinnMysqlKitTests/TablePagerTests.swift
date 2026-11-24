@@ -48,7 +48,7 @@ struct TablePagerTests {
         let next = try #require(pager.next())
         // The 200th row has id 801: created_at 2026-11-18.
         #expect(next.sql == "SELECT * FROM `shop`.`orders` WHERE `created_at` < '2026-11-18 10:00:00'"
-            + " OR (`created_at` = '2026-11-18 10:00:00' AND `id` < '801') ORDER BY `created_at` DESC, `id` DESC LIMIT 201")
+            + " OR (`created_at` = '2026-11-18 10:00:00' AND `id` < 801) ORDER BY `created_at` DESC, `id` DESC LIMIT 201")
         _ = pager.apply(next, columns: Self.columns, rows: Self.rows(201, firstID: 800, descending: true))
         #expect(pager.firstRow == 201)
         #expect(pager.hasPrevious)
@@ -61,7 +61,7 @@ struct TablePagerTests {
         _ = pager.apply(try #require(pager.next()), columns: Self.columns, rows: Self.rows(201, firstID: 401))
         #expect(pager.firstRow == 401)
         let previous = try #require(pager.previous())
-        #expect(previous.sql == "SELECT * FROM `shop`.`orders` WHERE `id` < '401' ORDER BY `id` DESC LIMIT 201")
+        #expect(previous.sql == "SELECT * FROM `shop`.`orders` WHERE `id` < 401 ORDER BY `id` DESC LIMIT 201")
         // The server answers nearest first: ids 400 down to 200.
         let page = pager.apply(previous, columns: Self.columns, rows: Self.rows(201, firstID: 400, descending: true))
         #expect(page.first?.first == "201")
@@ -121,15 +121,15 @@ struct TablePagerTests {
         #expect(pager.reload() == next)
     }
 
-    @Test func theEditorGetsThePageInReadingOrder() throws {
+    @Test func theEditorGetsThePageAsAnOffsetQuery() throws {
         var pager = TablePager(table: Self.table, keyColumns: ["id"])
         #expect(pager.editorSQL == "SELECT * FROM `shop`.`orders` ORDER BY `id` ASC LIMIT 200")
         _ = pager.apply(pager.first(sortedBy: nil), columns: Self.columns, rows: Self.rows(201))
         _ = pager.apply(try #require(pager.next()), columns: Self.columns, rows: Self.rows(201, firstID: 201))
         _ = pager.apply(try #require(pager.next()), columns: Self.columns, rows: Self.rows(201, firstID: 401))
         _ = pager.apply(try #require(pager.previous()), columns: Self.columns, rows: Self.rows(201, firstID: 400, descending: true))
-        #expect(pager.editorSQL == "SELECT * FROM (SELECT * FROM `shop`.`orders` WHERE `id` < '401' ORDER BY `id` DESC LIMIT 200) AS page"
-            + " ORDER BY `id` ASC")
+        #expect(pager.editorSQL == "SELECT * FROM `shop`.`orders` ORDER BY `id` ASC LIMIT 200 OFFSET 200",
+                "the editor gets no values to escape: its session may read backslashes differently")
     }
 
     @Test func thePositionNamesTheRowsOnScreenAndTheTablesSize() throws {
@@ -142,5 +142,85 @@ struct TablePagerTests {
         _ = pager.apply(try #require(pager.next()), columns: Self.columns, rows: Self.rows(37, firstID: 201))
         #expect(pager.position(rowsOnPage: 37, estimatedTotal: 2_812_331, locale: english) == "Rows 201–237 of 237",
                 "the last page knows the count")
+    }
+
+    // Review #2: a page cut short by the reader's 64 MiB limit is not the end of the table.
+    @Test func aTruncatedPageIsNotTheLastPage() throws {
+        var pager = TablePager(table: Self.table, keyColumns: ["id"])
+        _ = pager.apply(pager.first(sortedBy: nil), columns: Self.columns, rows: Self.rows(167), truncated: true)
+        #expect(pager.hasNext)
+        #expect(pager.position(rowsOnPage: 167, estimatedTotal: 300, locale: Locale(identifier: "en_US")) == "Rows 1–167 of ≈ 300")
+        let next = try #require(pager.next())
+        #expect(next.sql.contains("WHERE `id` > 167 "))
+        _ = pager.apply(next, columns: Self.columns, rows: Self.rows(201, firstID: 168))
+        #expect(pager.firstRow == 168)
+
+        var offsetPager = TablePager(table: Self.table, keyColumns: [])
+        _ = offsetPager.apply(offsetPager.first(sortedBy: nil), columns: Self.columns, rows: Self.rows(167), truncated: true)
+        #expect(try #require(offsetPager.next()).sql.hasSuffix("LIMIT 201 OFFSET 167"), "the next page starts after the rows shown")
+    }
+
+    @Test func aTruncatedPreviousPageIsNotTheFirstPage() throws {
+        var pager = TablePager(table: Self.table, keyColumns: ["id"])
+        _ = pager.apply(pager.first(sortedBy: nil), columns: Self.columns, rows: Self.rows(201))
+        _ = pager.apply(try #require(pager.next()), columns: Self.columns, rows: Self.rows(201, firstID: 201))
+        _ = pager.apply(try #require(pager.next()), columns: Self.columns, rows: Self.rows(201, firstID: 401))
+        _ = pager.apply(try #require(pager.previous()), columns: Self.columns, rows: Self.rows(90, firstID: 400, descending: true), truncated: true)
+        #expect(pager.firstRow == 311, "90 rows before row 401")
+        #expect(pager.hasPrevious)
+    }
+
+    // Review #3, #6: sorts the server cannot compare exactly the way it orders them page by offset.
+    @Test func textLongStringsAndTimestampsPageByOffset() throws {
+        var title = ColumnDefinition(name: "title", type: .varString, table: "orders", schema: "shop", flags: ColumnDefinition.notNullFlag,
+                                     characterSet: 45, length: 1_200)
+        let stamp = Self.column("stamped_at", .timestamp)
+        let body = ColumnDefinition(name: "body", type: .blob, table: "orders", schema: "shop", flags: ColumnDefinition.notNullFlag, characterSet: 45)
+        let columns = [Self.column("id", .longLong), body, title, stamp]
+        for sorted in ["body", "title", "stamped_at"] {
+            var pager = TablePager(table: Self.table, keyColumns: ["id"])
+            _ = pager.apply(pager.first(sortedBy: .init(column: sorted, ascending: true)), columns: columns,
+                            rows: (0..<201).map { [String($0), "b", "t", "2026-11-01 01:30:00"] })
+            #expect(!pager.seeksByKey, "\(sorted)")
+            #expect(try #require(pager.next()).sql.hasSuffix("LIMIT 201 OFFSET 200"), "\(sorted)")
+        }
+        title = ColumnDefinition(name: "title", type: .varString, table: "orders", schema: "shop", flags: ColumnDefinition.notNullFlag,
+                                 characterSet: 45, length: 1_020)
+        var pager = TablePager(table: Self.table, keyColumns: ["id"])
+        _ = pager.apply(pager.first(sortedBy: .init(column: "title", ascending: true)), columns: [Self.column("id", .longLong), title],
+                        rows: (0..<201).map { [String($0), "t"] })
+        #expect(pager.seeksByKey, "VARCHAR(255) in utf8mb4 is compared whole")
+    }
+
+    // Review #4: MySQL compares a quoted number with a DECIMAL as a double; numbers go unquoted.
+    @Test func numbersAreComparedAsNumbers() throws {
+        let columns = [Self.column("id", .newDecimal), Self.column("amount", .longLong)]
+        var pager = TablePager(table: Self.table, keyColumns: ["id"])
+        _ = pager.apply(pager.first(sortedBy: .init(column: "amount", ascending: true)), columns: columns,
+                        rows: (0..<201).map { ["15000000000000002\($0 % 10)0", "-\($0)"] })
+        let next = try #require(pager.next()).sql
+        // The 200th row: amount -199, id 1500000000000000290 (19 digits: not exact as a double).
+        #expect(next.contains("`amount` > -199 OR (`amount` = -199 AND `id` > 1500000000000000290)"), "\(next)")
+    }
+
+    // Review #5: without a key, ties in the sort column are broken by the other columns, so OFFSET pages are stable.
+    @Test func aKeylessSortBreaksTiesWithTheOtherColumns() {
+        let pager = TablePager(table: Self.table, keyColumns: [], tieBreakers: ["a", "b", "c"])
+        #expect(pager.first(sortedBy: .init(column: "B", ascending: false)).sql
+            == "SELECT * FROM `shop`.`orders` ORDER BY `B` DESC, `a` DESC, `c` DESC LIMIT 201")
+        #expect(pager.first(sortedBy: nil).sql == "SELECT * FROM `shop`.`orders` LIMIT 201", "the table's own order needs no sort")
+    }
+
+    // Review #7: everything before the page was deleted; the empty answer is the start of the table.
+    @Test func anEmptyPreviousPageIsTheStart() throws {
+        var pager = TablePager(table: Self.table, keyColumns: ["id"])
+        _ = pager.apply(pager.first(sortedBy: nil), columns: Self.columns, rows: Self.rows(201))
+        _ = pager.apply(try #require(pager.next()), columns: Self.columns, rows: Self.rows(201, firstID: 201))
+        _ = pager.apply(try #require(pager.next()), columns: Self.columns, rows: Self.rows(201, firstID: 401))
+        let previous = try #require(pager.previous())
+        #expect(previous.readsBackward)
+        #expect(pager.apply(previous, columns: Self.columns, rows: []).isEmpty)
+        #expect(pager.firstRow == 1)
+        #expect(!pager.hasPrevious)
     }
 }

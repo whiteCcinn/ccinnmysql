@@ -10,8 +10,9 @@ struct ResultGridSortTests {
     static let columns = [ColumnDefinition(name: "id", type: .longLong), ColumnDefinition(name: "city", type: .varString)]
     static let rows: [[String?]] = [["3", "KL"], ["1", "Penang"], ["2", "Ipoh"]]
 
-    private func makeGrid(serverSort: ResultGrid.ServerSort?, rowNumberOffset: Int = 0) -> (ResultGrid.Coordinator, NSTableView) {
-        let grid = ResultGrid(resultID: UUID(), columns: Self.columns, rows: Self.rows, serverSort: serverSort, rowNumberOffset: rowNumberOffset)
+    private func makeGrid(serverSort: ResultGrid.ServerSort?, rowNumberOffset: Int = 0, resultID: UUID = UUID()) -> (ResultGrid.Coordinator, NSTableView) {
+        let grid = ResultGrid(resultID: resultID, columns: Self.columns, rows: Self.rows, editableColumns: [1], onEdit: { _ in },
+                              serverSort: serverSort, rowNumberOffset: rowNumberOffset)
         let coordinator = ResultGrid.Coordinator(grid)
         let tableView = NSTableView()
         coordinator.tableView = tableView
@@ -58,5 +59,14 @@ struct ResultGridSortTests {
         let numberColumn = try #require(tableView.tableColumns.first)
         let cell = coordinator.tableView(tableView, viewFor: numberColumn, row: 0) as? NSTableCellView
         #expect(cell?.textField?.stringValue == "201")
+    }
+
+    // Review #1: an edit names the page it was made on, so the model can refuse it once another page replaced it.
+    @Test func anEditNamesItsPage() throws {
+        let page = UUID()
+        let (coordinator, _) = makeGrid(serverSort: nil, resultID: page)
+        let request = try #require(coordinator.editRequest(row: 0, column: 2))
+        #expect(request.resultID == page)
+        #expect(request.value == "KL")
     }
 }

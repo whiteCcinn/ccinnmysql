@@ -27,7 +27,7 @@ struct ObjectDetailView: View {
         }
         .sheet(item: $model.inspected) { ValueInspectorView(value: $0) }
         .sheet(item: $editing) { request in
-            CellEditorSheet(request: request) { newValue in model.proposeEdit(row: request.row, column: request.column, newValue: newValue) }
+            CellEditorSheet(request: request) { newValue in model.proposeEdit(request, newValue: newValue) }
         }
         .sheet(item: $model.pendingEdit) { edit in
             ConfirmStatementSheet(title: "Save this change?", message: "CcinnMysql runs the statement in a transaction and commits only if exactly one row matches.",

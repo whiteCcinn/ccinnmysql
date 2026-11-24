@@ -17,6 +17,8 @@ struct InspectedValue: Identifiable {
 /// A cell the user wants to change (row is the index into the result's rows, independent of sorting).
 struct CellEditRequest: Identifiable, Equatable {
     let id = UUID()
+    /// The result the cell belongs to: an edit is refused once another result (page) replaced it.
+    var resultID = UUID()
     let row: Int
     let column: Int
     let columnName: String
@@ -304,13 +306,14 @@ struct ResultGrid: NSViewRepresentable {
             }
         }
 
-        private func editRequest(row: Int, column tableColumnIndex: Int) -> CellEditRequest? {
+        func editRequest(row: Int, column tableColumnIndex: Int) -> CellEditRequest? {
             guard parent.onEdit != nil, let tableView, parent.rows.indices.contains(row), tableView.tableColumns.indices.contains(tableColumnIndex),
                   let column = Int(tableView.tableColumns[tableColumnIndex].identifier.rawValue), parent.editableColumns.contains(column),
                   parent.columns.indices.contains(column) else { return nil }
             let dataRow = rowIndex(row)
             let values = parent.rows[dataRow]
-            return CellEditRequest(row: dataRow, column: column, columnName: parent.columns[column].name, value: column < values.count ? values[column] : nil)
+            return CellEditRequest(resultID: parent.resultID, row: dataRow, column: column, columnName: parent.columns[column].name,
+                                   value: column < values.count ? values[column] : nil)
         }
 
         private func requestEdit(row: Int, column: Int) {
