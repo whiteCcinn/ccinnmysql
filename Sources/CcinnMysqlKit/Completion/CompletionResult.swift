@@ -40,17 +40,19 @@ public struct CompletionResult: Sendable {
     public let expectsObjectName: Bool
     /// The name is back-quoted; items go in back-quoted.
     public let isQuoted: Bool
+    /// Digits may start a name here (after `FROM`, after a dot); elsewhere `20` is a number and matches nothing.
+    let allowsNumericName: Bool
     let pool: CompletionPool
 
     public init(replacementRange: Range<Int>, prefix: String, items: [CompletionItem], missingColumns: [TableKey] = [],
                 missingDatabases: [String] = [], expectsObjectName: Bool = false, isQuoted: Bool = false) {
         self.init(replacementRange: replacementRange, prefix: prefix, items: items, missingColumns: missingColumns,
                   missingDatabases: missingDatabases, expectsObjectName: expectsObjectName, isQuoted: isQuoted,
-                  pool: CompletionPool(items))
+                  allowsNumericName: expectsObjectName, pool: CompletionPool(items))
     }
 
     init(replacementRange: Range<Int>, prefix: String, items: [CompletionItem], missingColumns: [TableKey],
-         missingDatabases: [String], expectsObjectName: Bool, isQuoted: Bool, pool: CompletionPool) {
+         missingDatabases: [String], expectsObjectName: Bool, isQuoted: Bool, allowsNumericName: Bool, pool: CompletionPool) {
         self.replacementRange = replacementRange
         self.prefix = prefix
         self.items = items
@@ -58,7 +60,18 @@ public struct CompletionResult: Sendable {
         self.missingDatabases = missingDatabases
         self.expectsObjectName = expectsObjectName
         self.isQuoted = isQuoted
+        self.allowsNumericName = allowsNumericName
         self.pool = pool
+    }
+
+    /// This result for a text with `offset` more UTF-16 units before the text it was computed for (the editor sends
+    /// the engine one statement of the script).
+    public func shifted(by offset: Int) -> CompletionResult {
+        guard offset != 0 else { return self }
+        return CompletionResult(replacementRange: (replacementRange.lowerBound + offset)..<(replacementRange.upperBound + offset),
+                                prefix: prefix, items: items, missingColumns: missingColumns, missingDatabases: missingDatabases,
+                                expectsObjectName: expectsObjectName, isQuoted: isQuoted, allowsNumericName: allowsNumericName,
+                                pool: pool)
     }
 
     public var needsMoreSchema: Bool { !missingColumns.isEmpty || !missingDatabases.isEmpty }
@@ -87,10 +100,19 @@ public struct CompletionResult: Sendable {
         }
         let end = isQuoted ? Self.endOfQuotedName(in: text, from: cursor) : Self.endOfPlainName(in: text, from: cursor)
         let prefix = text.substring(with: NSRange(location: nameStart, length: cursor - nameStart))
-        return CompletionResult(replacementRange: start..<end, prefix: prefix,
-                                items: CompletionRanking.rank(pool, prefix: prefix, limit: limit, quoted: isQuoted),
+        let items = !isQuoted && !allowsNumericName && Self.isNumber(prefix)
+            ? [] : CompletionRanking.rank(pool, prefix: prefix, limit: limit, quoted: isQuoted)
+        return CompletionResult(replacementRange: start..<end, prefix: prefix, items: items,
                                 missingColumns: missingColumns, missingDatabases: missingDatabases,
-                                expectsObjectName: expectsObjectName, isQuoted: isQuoted, pool: pool)
+                                expectsObjectName: expectsObjectName, isQuoted: isQuoted, allowsNumericName: allowsNumericName,
+                                pool: pool)
+    }
+
+    /// `20`, `0x1F`: the server reads it as a number, not a name (`1abc` is a name).
+    private static func isNumber(_ typed: String) -> Bool {
+        guard let first = typed.utf16.first, SQLLexer.isDigit(first) else { return false }
+        let tokens = SQLLexer(typed).tokens()
+        return tokens.count != 1 || tokens[0].kind != .identifier
     }
 
     /// Where the name ending at `cursor` starts: its letters and digits, and an opening back-quote right before them.

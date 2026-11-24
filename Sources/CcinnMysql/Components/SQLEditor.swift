@@ -488,6 +488,13 @@ struct SQLEditor: NSViewRepresentable {
             }
         }
 
+        /// The editor inserted `opener` and its closer and put the caret between them: a back-quote opens a quoted name.
+        func didInsertPair(_ opener: String) {
+            guard opener == "`", parent.completionProvider != nil, let textView, parent.isEditable, !textView.hasMarkedText(),
+                  textView.selectedRange().length == 0 else { return }
+            requestCompletion(opensWithoutPrefix: false)
+        }
+
         func forceCompletion() {
             hideCompletions()
             guard let textView, parent.isEditable, textView.selectedRange().length == 0, !textView.hasMarkedText() else { return }
@@ -515,6 +522,8 @@ struct SQLEditor: NSViewRepresentable {
             let selection = textView.selectedRange()
             guard selection.length == 0 else { return hideCompletions() }
             completionCursor = selection.location
+            // The editor's own back-quote pair: the caret moves between the quotes after this edit (`didInsertPair`).
+            if textView.isInsertingPair { return hideCompletions() }
             switch TypedInput(lastInserted) {
             case .nameCharacter:
                 if activeCompletion != nil {
@@ -526,7 +535,14 @@ struct SQLEditor: NSViewRepresentable {
                 hideCompletions()
                 requestCompletion(opensWithoutPrefix: false)
             case .deletion:
-                if !narrowActiveCompletion() { hideCompletions() }
+                if activeCompletion != nil {
+                    if !narrowActiveCompletion() { hideCompletions() }
+                } else if let pending = pendingCompletion, pending.earliestEdit >= pending.nameStart,
+                          selection.location >= pending.nameStart {
+                    return // still the name the request in flight answers for
+                } else {
+                    hideCompletions()
+                }
             case .backQuote, .space:
                 // A space ends the name being completed: its list must not stay up, or be accepted, while the next
                 // position is computed. Where a name must follow (`FROM `, `` FROM ` ``), the new list opens.
@@ -554,15 +570,22 @@ struct SQLEditor: NSViewRepresentable {
         private func requestCompletion(opensWithoutPrefix: Bool) {
             guard let provider = parent.completionProvider, let textView, let storage = textView.textStorage else { return }
             completionTask?.cancel()
-            let text = textView.string
+            let source = storage.mutableString
             let cursor = textView.selectedRange().location
+            // The engine needs only the statement at the cursor: from the start of the statement that begins before it to
+            // the start of the next one. Statement starts are token boundaries, so the slice lexes as the whole text does,
+            // and a request costs the statement, not the script. (No statements: text over the highlighting limit.)
+            let start = min(statements.last { $0.range.lowerBound <= cursor }?.range.lowerBound ?? 0, cursor)
+            let end = max(statements.first { $0.range.lowerBound > cursor }?.range.lowerBound ?? source.length, cursor)
+            guard end <= source.length else { return }
+            let text = source.substring(with: NSRange(location: start, length: end - start))
             completionRequestCounter &+= 1
             let id = completionRequestCounter
-            pendingCompletion = PendingCompletion(id: id, nameStart: CompletionResult.nameStart(in: storage.mutableString, before: cursor),
+            pendingCompletion = PendingCompletion(id: id, nameStart: CompletionResult.nameStart(in: source, before: cursor),
                                                   opensWithoutPrefix: opensWithoutPrefix)
             completionCursor = cursor
             completionTask = Task { [weak self] in
-                await provider(text, cursor) { result in self?.apply(result, request: id) }
+                await provider(text, cursor - start) { result in self?.apply(result.shifted(by: start), request: id) }
             }
         }
 
@@ -623,6 +646,7 @@ struct SQLEditor: NSViewRepresentable {
             pendingCompletion = nil
             activeCompletion = nil
             completionCursor = nil
+            completionModel.reset()
             hideCompletionPanel()
         }
 
@@ -704,6 +728,9 @@ final class SQLTextView: NSTextView {
         }
     }
 
+    /// While the editor inserts an opener with its closer, before it puts the caret between them.
+    private(set) var isInsertingPair = false
+
     private static let pairs: [String: String] = ["(": ")", "'": "'", "\"": "\"", "`": "`"]
     private static let closers: Set<String> = [")", "'", "\"", "`"]
 
@@ -776,8 +803,11 @@ final class SQLTextView: NSTextView {
             return
         }
         if let closer = Self.pairs[typed], selection.length == 0, shouldPair(typed, next: next, text: text, at: selection.location) {
+            isInsertingPair = true
             super.insertText(typed + closer, replacementRange: replacementRange)
+            isInsertingPair = false
             setSelectedRange(NSRange(location: selection.location + 1, length: 0))
+            coordinator?.didInsertPair(typed)
             return
         }
         super.insertText(insertString, replacementRange: replacementRange)
@@ -939,12 +969,31 @@ final class CompletionListModel {
     static let rowHeight: CGFloat = 24
     static let visibleRows = 9
 
-    /// A new prefix selects the best match; the same prefix again (schema loaded meanwhile) keeps the selected item.
+    /// The user moved the selection (arrow keys, a click) since the prefix last changed.
+    private var selectionMoved = false
+
+    /// Selects the best match, unless the user picked another item for this same prefix (and it is still listed),
+    /// e.g. while the second answer, with schema loaded meanwhile, arrives.
     func update(items: [CompletionItem], prefix: String) {
-        let kept = prefix == self.prefix ? selectedItem?.id : nil
+        let kept = selectionMoved && prefix == self.prefix ? selectedItem?.id : nil
+        if prefix != self.prefix { selectionMoved = false }
         self.items = items
         self.prefix = prefix
         selectedIndex = kept.flatMap { id in items.firstIndex { $0.id == id } } ?? 0
+    }
+
+    /// Forgets the list and the user's selection: the next list starts at its best match.
+    func reset() {
+        items = []
+        prefix = ""
+        selectedIndex = 0
+        selectionMoved = false
+    }
+
+    func select(_ index: Int) {
+        guard items.indices.contains(index) else { return }
+        selectedIndex = index
+        selectionMoved = true
     }
 
     var selectedItem: CompletionItem? { items.indices.contains(selectedIndex) ? items[selectedIndex] : nil }
@@ -952,6 +1001,7 @@ final class CompletionListModel {
     func move(_ delta: Int) {
         guard !items.isEmpty else { return }
         selectedIndex = min(max(0, selectedIndex + delta), items.count - 1)
+        selectionMoved = true
     }
 
     var preferredSize: NSSize {
@@ -995,7 +1045,7 @@ private struct CompletionListView: View {
                             CompletionRow(item: item, prefix: model.prefix, isSelected: index == model.selectedIndex)
                                 .contentShape(Rectangle())
                                 .onTapGesture {
-                                    model.selectedIndex = index
+                                    model.select(index)
                                     model.onAccept(item)
                                 }
                         }

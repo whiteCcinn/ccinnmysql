@@ -97,6 +97,17 @@ struct CompletionAccuracyTests {
         }
     }
 
+    // Review #3: `ON` names a table only in the header of CREATE/DROP INDEX and CREATE TRIGGER.
+    @Test func onInAForeignKeyOrAJoinIsNotATablePosition() {
+        for text in ["CREATE TABLE c (id INT, pid INT, INDEX idx_pid (pid), FOREIGN KEY (pid) REFERENCES parent (id) ON |",
+                     "CREATE TRIGGER trg AFTER INSERT ON orders FOR EACH ROW UPDATE stock s JOIN items i ON |",
+                     "CREATE TABLE t2 AS SELECT * FROM orders FORCE INDEX (p) JOIN items i ON |"] {
+            #expect(!Self.complete(text).expectsObjectName, "\(text)")
+        }
+        #expect(Self.isTablePosition("CREATE INDEX i USING BTREE ON us|"))
+        #expect(Self.isTablePosition("CREATE DEFINER = CURRENT_USER TRIGGER t BEFORE UPDATE ON us|"))
+    }
+
     @Test func explainAndDescribeOfferTablesAndStatements() {
         #expect(Self.isTablePosition("EXPLAIN us|"))
         let labels = Self.labels("EXPLAIN |")
@@ -187,6 +198,32 @@ struct CompletionAccuracyTests {
         #expect(narrowed.replacementRange == 14..<16)
         let deeper = try #require(opened.narrowed(in: "SELECT * FROM tbl_499" as NSString, cursor: 21))
         #expect(deeper.items.first?.label == "tbl_499")
+    }
+
+    // Review #2: digits typed where a value goes are a number, also when the list was opened before them.
+    @Test func narrowingKeepsDigitsANumberWhereAValueGoes() throws {
+        let columns = ["col_2024", "ret_7d", "x"].enumerated().map {
+            ColumnInfo(name: $1, ordinal: $0 + 1, dataType: "int", columnType: "int", isNullable: true)
+        }
+        let schema = SchemaSnapshot(currentDatabase: "shop", databases: ["shop"], objectsByDatabase: ["shop": [.init(name: "t", kind: .table)]],
+                                    columnsByTable: [TableKey(database: "shop", table: "t"): columns])
+        let opened = Self.complete("SELECT * FROM t WHERE x = |", schema: schema)
+        for typed in ["20", "7", "2024"] {
+            let text = "SELECT * FROM t WHERE x = \(typed)" as NSString
+            #expect(opened.narrowed(in: text, cursor: text.length)?.items.isEmpty == true, "\(typed)")
+        }
+        let table = Self.complete("SELECT * FROM |")
+        #expect(table.narrowed(in: "SELECT * FROM 2024" as NSString, cursor: 18)?.items.map(\.label) == ["2024_report"])
+    }
+
+    @Test func aShiftedResultNarrowsInTheWholeText() throws {
+        let statement = Self.complete("SELECT * FROM |")
+        let prefix = "SELECT 1;\n"
+        let shifted = statement.shifted(by: (prefix as NSString).length)
+        #expect(shifted.replacementRange == 24..<24)
+        let narrowed = try #require(shifted.narrowed(in: (prefix + "SELECT * FROM crm_p") as NSString, cursor: 29))
+        #expect(narrowed.replacementRange == 24..<29)
+        #expect(narrowed.items.map(\.label) == ["crm_pipeline"])
     }
 
     @Test func narrowingFollowsBackspaceAndEndsWithTheName() throws {

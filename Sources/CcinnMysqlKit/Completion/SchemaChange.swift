@@ -7,10 +7,14 @@ public struct SchemaChange: Sendable, Equatable {
     /// As written in the statement (case kept); match them case-insensitively.
     public let databases: Set<String>
     public let tables: Set<TableKey>
+    /// `CREATE`/`DROP DATABASE` (or `SCHEMA`): the list of databases changed.
+    public let changesDatabaseList: Bool
 
     public init(sql: String, currentDatabase: String?) {
         let lexer = SQLLexer(sql)
         let tokens = lexer.tokens().filter { $0.kind != .comment }
+        let leading = tokens.prefix(2).map { $0.kind == .keyword ? lexer.text(of: $0).uppercased() : "" }
+        changesDatabaseList = leading.count == 2 && ["CREATE", "DROP"].contains(leading[0]) && ["DATABASE", "SCHEMA"].contains(leading[1])
         let current = currentDatabase.flatMap { $0.isEmpty ? nil : $0 }
         var databases = Set<String>()
         var tables = Set<TableKey>()

@@ -78,6 +78,7 @@ public enum CompletionEngine {
         var missing: [TableKey] = []
         var missingDatabases: [String] = []
         var expectsObjectName = false
+        var allowsNumericName = true
         if let last = before.last, isDot(last, lexer) {
             let qualifier = qualifierChain(before: before, lexer: lexer)
             (candidates, missing) = memberCandidates(qualifier: qualifier, scope: scope, schema: schema)
@@ -92,12 +93,13 @@ public enum CompletionEngine {
                 missingDatabases.append(current)
             }
             expectsObjectName = context.expectsObjectName
+            allowsNumericName = context.expectsObjectName
         }
         let pool = CompletionPool(candidates)
         return CompletionResult(replacementRange: name.replacementRange, prefix: name.prefix,
                                 items: CompletionRanking.rank(pool, prefix: name.prefix, limit: limit, quoted: name.isQuoted),
                                 missingColumns: missing, missingDatabases: missingDatabases, expectsObjectName: expectsObjectName,
-                                isQuoted: name.isQuoted, pool: pool)
+                                isQuoted: name.isQuoted, allowsNumericName: allowsNumericName, pool: pool)
     }
 
     /// The name token the cursor is in or just after (whole token replaced, the part before the cursor matched), an
@@ -351,7 +353,7 @@ public enum CompletionEngine {
                 return distance == 0 || sawComma ? .tableName : .expression
             case "TO" where firstWord == "RENAME" && distance == 0:
                 return .newName // `RENAME TABLE a TO |`; after `a TO b, ` the walk reaches TABLE.
-            case "ON" where namesTableAfterOn(firstWord: firstWord, words: words[..<index]):
+            case "ON" where namesTableAfterOn(firstWord: firstWord, words: words, tokens: before, at: index):
                 return distance == 0 ? .tableName : .expression // `CREATE INDEX i ON |`, `GRANT SELECT ON |`
             case "SELECT", "WHERE", "ON", "HAVING", "BY", "SET", "AND", "OR", "NOT", "WHEN", "THEN", "ELSE", "CASE",
                  "DISTINCT", "IN", "LIKE", "BETWEEN", "IS", "USING", "OVER", "PARTITION", "VALUES":
@@ -367,12 +369,21 @@ public enum CompletionEngine {
         return .expression
     }
 
-    /// `ON` names a table in `CREATE/DROP INDEX`, `CREATE TRIGGER`, `GRANT` and `REVOKE`; elsewhere it starts a join condition.
-    static func namesTableAfterOn(firstWord: String, words: ArraySlice<String>) -> Bool {
+    /// `ON` at `words[index]` names a table in the header of `CREATE/DROP INDEX name [USING BTREE|HASH] ON`,
+    /// `CREATE TRIGGER name BEFORE|AFTER INSERT|UPDATE|DELETE ON`, and in `GRANT`/`REVOKE`. Elsewhere (a join, a
+    /// foreign key's `ON DELETE`, a trigger body) it does not.
+    static func namesTableAfterOn(firstWord: String, words: [String], tokens: [SQLToken], at index: Int) -> Bool {
         switch firstWord {
-        case "GRANT", "REVOKE": true
-        case "CREATE", "DROP": words.contains("INDEX") || words.contains("TRIGGER")
-        default: false
+        case "GRANT", "REVOKE":
+            return true
+        case "CREATE", "DROP":
+            var position = index - 1
+            if position >= 1, words[position] == "BTREE" || words[position] == "HASH", words[position - 1] == "USING" { position -= 2 }
+            if position >= 1, isName(tokens[position]), words[position - 1] == "INDEX" { return true }
+            return firstWord == "CREATE" && index >= 2 && ["INSERT", "UPDATE", "DELETE"].contains(words[index - 1])
+                && ["BEFORE", "AFTER"].contains(words[index - 2])
+        default:
+            return false
         }
     }
 

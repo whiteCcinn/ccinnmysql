@@ -8,6 +8,8 @@ import Testing
 @MainActor
 private final class CallCounter {
     var count = 0
+    /// The text of every request.
+    var texts: [String] = []
 }
 
 /// An editor wired like `SQLWorkbenchView` wires it, with the binding and the model's diagnostics held
@@ -33,6 +35,7 @@ private final class EditorHarness {
         if let completionSchema {
             completionProvider = { text, cursor, deliver in
                 requests.count += 1
+                requests.texts.append(text)
                 if providerDelay > .zero { try? await Task.sleep(for: providerDelay) }
                 deliver(CompletionEngine.complete(text: text, cursor: cursor, schema: completionSchema))
             }
@@ -73,6 +76,14 @@ private final class EditorHarness {
     /// Types `string` at the end, one key at a time.
     func typeAtEnd(_ string: String) {
         for character in string { type(String(character), at: (textView.string as NSString).length) }
+    }
+
+    /// Waits until the popup lists exactly `labels`.
+    func waitForCompletions(_ labels: [String], within timeout: Duration = .seconds(2)) async throws {
+        let deadline = ContinuousClock.now + timeout
+        while coordinator.visibleCompletions?.map(\.label) != labels, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
     }
 
     /// Labels of the completion popup once it shows something, `nil` if it stays hidden.
@@ -579,6 +590,70 @@ struct CompletionPopupTests {
         harness.type("x", at: 0)
         #expect(harness.coordinator.visibleCompletions == nil)
         #expect(try await harness.shownCompletions(within: .milliseconds(300)) == nil)
+    }
+
+    /// Answers first from a schema with only `first` tables, then, 80 ms later, from the whole schema.
+    private static func twoAnswers(first: [String]) -> CompletionProvider {
+        let partial = SchemaSnapshot(currentDatabase: "demo", databases: ["demo"],
+                                     objectsByDatabase: ["demo": first.map { SchemaSnapshot.ObjectEntry(name: $0, kind: .table) }])
+        return { text, cursor, deliver in
+            deliver(CompletionEngine.complete(text: text, cursor: cursor, schema: partial))
+            try? await Task.sleep(for: .milliseconds(80))
+            deliver(CompletionEngine.complete(text: text, cursor: cursor, schema: Self.schema))
+        }
+    }
+
+    // Review #1: the first answer's top row was still selected after the second answer, so Return took a worse match.
+    @Test func theBestMatchIsSelectedWhenTheSecondAnswerArrives() async throws {
+        let harness = EditorHarness("select * from ")
+        harness.completionProvider = Self.twoAnswers(first: ["crm_pipeline", "mv_report_crm_hour"])
+        harness.render()
+        harness.typeAtEnd("crm")
+        #expect(try await harness.shownCompletions() == ["crm_pipeline", "mv_report_crm_hour"])
+        try await harness.waitForCompletions(["crm_contact", "crm_pipeline", "dw_sales_crm_funnel_daily", "mv_report_crm_hour"])
+        harness.textView.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        #expect(harness.textView.string == "select * from crm_contact")
+    }
+
+    @Test func aSelectionTheUserMovedSurvivesTheSecondAnswer() async throws {
+        let harness = EditorHarness("select * from ")
+        harness.completionProvider = Self.twoAnswers(first: ["crm_pipeline", "mv_report_crm_hour"])
+        harness.render()
+        harness.typeAtEnd("crm")
+        #expect(try await harness.shownCompletions() == ["crm_pipeline", "mv_report_crm_hour"])
+        harness.textView.doCommand(by: #selector(NSResponder.moveDown(_:)))
+        try await harness.waitForCompletions(["crm_contact", "crm_pipeline", "dw_sales_crm_funnel_daily", "mv_report_crm_hour"])
+        harness.textView.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        #expect(harness.textView.string == "select * from mv_report_crm_hour")
+    }
+
+    // Review #4: the back-quote the editor closes opens the table list right away.
+    @Test func aBackQuoteAfterFromOpensTheList() async throws {
+        let harness = EditorHarness("select * from ", completionSchema: Self.schema)
+        harness.typeAtEnd("`")
+        #expect(try await harness.shownCompletions()?.first == "crm_contact")
+        harness.textView.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        #expect(harness.textView.string == "select * from `crm_contact`")
+    }
+
+    // Review #5: Backspace before the first answer arrived dropped the request.
+    @Test func backspaceWhileTheFirstAnswerIsOnItsWayKeepsIt() async throws {
+        let harness = EditorHarness("select * from ", completionSchema: Self.schema, providerDelay: .milliseconds(150))
+        harness.typeAtEnd("crm_p")
+        harness.textView.deleteBackward(nil)
+        #expect(try await harness.shownCompletions()?.prefix(2) == ["crm_contact", "crm_pipeline"])
+        #expect(harness.completionRequests.count == 1)
+    }
+
+    // Review #7: every request lexed the whole script; the engine now gets the statement at the cursor.
+    @Test func onlyTheStatementAtTheCursorGoesToTheEngine() async throws {
+        let script = String(repeating: "SELECT 1;\n", count: 500)
+        let harness = EditorHarness(script + "select * from ", completionSchema: Self.schema)
+        harness.typeAtEnd("crm_p")
+        #expect(try await harness.shownCompletions() == ["crm_pipeline"])
+        #expect(harness.completionRequests.texts.allSatisfy { ($0 as NSString).length < 100 }, "\(harness.completionRequests.texts.map(\.count))")
+        harness.textView.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        #expect(harness.textView.string == script + "select * from crm_pipeline")
     }
 
     @Test func typingNarrowsTheListUntilOnlyTheExactNameIsLeft() async throws {

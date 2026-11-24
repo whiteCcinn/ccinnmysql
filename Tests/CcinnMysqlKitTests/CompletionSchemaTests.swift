@@ -32,6 +32,16 @@ struct CompletionSchemaTests {
         #expect(change.tables.isEmpty)
     }
 
+    @Test func databaseDdlChangesTheDatabaseList() {
+        for sql in ["CREATE DATABASE crm", "create schema if not exists crm", "DROP DATABASE crm", "DROP SCHEMA IF EXISTS `crm`",
+                    "/* setup */ CREATE DATABASE crm"] {
+            #expect(SchemaChange(sql: sql, currentDatabase: "shop").changesDatabaseList, "\(sql)")
+        }
+        for sql in ["CREATE TABLE crm (id INT)", "ALTER TABLE t ADD COLUMN database_name TEXT", "DROP TABLE schema_log"] {
+            #expect(!SchemaChange(sql: sql, currentDatabase: "shop").changesDatabaseList, "\(sql)")
+        }
+    }
+
     @Test func cachedSchemaAgesAndFailedLoadsBackOff() {
         let now = Date()
         #expect(!SchemaCachePolicy.isStale(loadedAt: now.addingTimeInterval(-60), now: now))

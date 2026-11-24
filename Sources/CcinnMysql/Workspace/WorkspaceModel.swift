@@ -273,6 +273,7 @@ final class WorkspaceModel {
     /// After DDL: reloads the object lists of the databases `sql` names and drops the cached columns of its tables.
     func schemaDidChange(after sql: String, currentDatabase: String?) {
         let change = SchemaChange(sql: sql, currentDatabase: currentDatabase)
+        if change.changesDatabaseList { Task { await reloadDatabases() } }
         for database in Set(change.databases.compactMap(knownDatabase)) where databaseStates[database] != nil {
             loadObjects(database: database, force: true)
         }
