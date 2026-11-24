@@ -60,7 +60,7 @@ private final class TestMac {
 }
 
 private let passphrase = "correct horse battery staple"
-private let key = DatabaseKey(cluster: ClusterKey(rawValue: "my://db.prod:3306"), catalog: "def", database: "adx")
+private let key = DatabaseKey(cluster: ClusterKey(rawValue: "my://db.prod:3306"), catalog: "def", database: "crm")
 
 /// A CcinnMysql 1.5 backup (format 1: one JSON document) of `profile` with its password sealed the 1.5 way, as the
 /// 1.5 exporter wrote it, and a table note in its knowledge base.
@@ -71,7 +71,7 @@ private func legacyBackup(of profile: ConnectionProfile, password: String, passp
     let key = try BackupCrypto.DerivedKeys.master(passphrase: passphrase, salt: Array(salt), iterations: 10_000)
     guard let box = try AES.GCM.seal(secrets, using: key, authenticating: associatedData).combined else { throw CocoaError(.coderInvalidValue) }
     let note: [String: Any] = ["summary": "revenue in USD", "author": "user", "updatedAt": 800_000_000.0, "evidence": [[String: Any]]()]
-    let base: [String: Any] = ["formatVersion": 1, "connectionID": profile.id.uuidString, "database": "adx", "projects": [[String: Any]](),
+    let base: [String: Any] = ["formatVersion": 1, "connectionID": profile.id.uuidString, "database": "crm", "projects": [[String: Any]](),
                                "computed": [[String: Any]](), "references": [String: Any](), "notes": ["tables": ["report": note]],
                                "updatedAt": 800_000_000.0]
     let connection = try JSONSerialization.jsonObject(with: JSONEncoder().encode(profile))
@@ -110,7 +110,7 @@ struct BackupCenterTests {
                                             sshSecret: nil)
         old.defaults.set(5000, forKey: "autoLimit")
         try old.center.stores.knowledge.updateDatabase(key) { (knowledge: inout DatabaseKnowledge) -> Void in
-            knowledge.notes = [Note(id: "n1", table: "report_adx_hour", column: nil, kind: .description, text: "revenue in USD", evidence: [],
+            knowledge.notes = [Note(id: "n1", table: "report_crm_hour", column: nil, kind: .description, text: "revenue in USD", evidence: [],
                                     by: "user", at: Date(timeIntervalSince1970: 1_800_000_000), fingerprint: nil)]
         }
         let file = old.directory.appendingPathComponent("move.\(BackupFormat.fileExtension)")
@@ -214,7 +214,7 @@ struct BackupCenterTests {
         let new = TestMac(home: "/Users/new")
         defer { old.remove(); new.remove() }
         try old.center.stores.knowledge.updateIndex { (index: inout KnowledgeIndex) -> Void in
-            index.projects = [KnowledgeIndex.Project(id: "p1", path: "/Volumes/Work/code/adx", name: "adx", gitRemote: nil, addedAt: Date(), addedBy: "user"),
+            index.projects = [KnowledgeIndex.Project(id: "p1", path: "/Volumes/Work/code/crm", name: "crm", gitRemote: nil, addedAt: Date(), addedBy: "user"),
                               KnowledgeIndex.Project(id: "p2", path: "/Volumes/Work/code/ssp", name: "ssp", gitRemote: nil, addedAt: Date(), addedBy: "user")]
         }
         old.exportURL = old.directory.appendingPathComponent("move.\(BackupFormat.fileExtension)")
@@ -225,7 +225,7 @@ struct BackupCenterTests {
         #expect(new.center.remapFrom == "/Volumes/Work/code")
         #expect(new.center.remapTo == "~/code")
         new.center.remapCommonPrefix()
-        #expect(new.center.plan?.knowledge?.projects.map(\.path) == ["~/code/adx", "~/code/ssp"])
+        #expect(new.center.plan?.knowledge?.projects.map(\.path) == ["~/code/crm", "~/code/ssp"])
         #expect(new.center.remapMessage == "2 projects moved.")
     }
 

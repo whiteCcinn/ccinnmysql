@@ -30,35 +30,35 @@ private let confidence: @Sendable (Relationship) -> Int = { relationship in
 }
 
 private let knowledge: DatabaseKnowledge = {
-    var knowledge = DatabaseKnowledge(key: DatabaseKey(cluster: ClusterKey(rawValue: "my://fe:9030"), catalog: "def", database: "adx"))
+    var knowledge = DatabaseKnowledge(key: DatabaseKey(cluster: ClusterKey(rawValue: "my://fe:9030"), catalog: "def", database: "crm"))
     knowledge.tables = [
-        table("report_adx_hour", [("dt", "date", true), ("hour", "tinyint", true), ("dsp_id", "bigint", true), ("app_id", "bigint", true),
-                                  ("dsp_request", "bigint", false)], comment: "ADX 小时报表", partition: ["dt"], primary: ["dt", "hour", "dsp_id"]),
+        table("report_crm_hour", [("dt", "date", true), ("hour", "tinyint", true), ("dsp_id", "bigint", true), ("app_id", "bigint", true),
+                                  ("dsp_request", "bigint", false)], comment: "CRM 小时报表", partition: ["dt"], primary: ["dt", "hour", "dsp_id"]),
         table("dsp", [("id", "bigint", true), ("name", "varchar(64)", false)], primary: ["id"]),
         table("app", [("id", "bigint", true), ("publisher_id", "bigint", false), ("name", "varchar(64)", false)], primary: ["id"]),
         table("publisher", [("id", "bigint", true), ("name", "varchar(64)", false)], primary: ["id"]),
         table("report_app_day", [("dt", "date", true), ("app_id", "bigint", true), ("revenue", "numeric(18,6)", false)], primary: ["dt", "app_id"]),
-        table("mv_report_adx_day", [("dt", "date", true), ("dsp_id", "bigint", true)], kind: .materializedView,
-              lineage: [TableReference(table: "report_adx_hour")]),
-        table("adx_audit_log", [("id", "bigint", true)]),
-        table("adx_audit_detail", [("id", "bigint", true)]),
-        table("adx_audit_rule", [("id", "bigint", true)]),
+        table("mv_report_crm_day", [("dt", "date", true), ("dsp_id", "bigint", true)], kind: .materializedView,
+              lineage: [TableReference(table: "report_crm_hour")]),
+        table("crm_audit_log", [("id", "bigint", true)]),
+        table("crm_audit_detail", [("id", "bigint", true)]),
+        table("crm_audit_rule", [("id", "bigint", true)]),
         table("old_report", [("id", "bigint", true)], state: .dropped),
     ]
     knowledge.relationships = [
-        link("report_adx_hour", ["dsp_id"], "dsp", ["id"], score: 85, source: .code),
-        link("report_adx_hour", ["app_id"], "app", ["id"], score: 70),
+        link("report_crm_hour", ["dsp_id"], "dsp", ["id"], score: 85, source: .code),
+        link("report_crm_hour", ["app_id"], "app", ["id"], score: 70),
         link("app", ["publisher_id"], "publisher", ["id"], score: 60),
         link("report_app_day", ["app_id"], "app", ["id"], score: 65),
-        link("report_adx_hour", ["hour"], "dsp", ["id"], score: 90, source: .user, verdict: .reject),
+        link("report_crm_hour", ["hour"], "dsp", ["id"], score: 90, source: .user, verdict: .reject),
         link("report_app_day", ["dt"], "publisher", ["id"], score: 20),
-        link("mv_report_adx_day", [], "report_adx_hour", [], score: 100, kind: .lineage, source: .lineage),
+        link("mv_report_crm_day", [], "report_crm_hour", [], score: 100, kind: .lineage, source: .lineage),
         link("dsp", ["name"], "app", ["name"], score: 75, kind: .manyToMany, fingerprints: ["dsp": "fp-old", "app": "fp-app"]),
     ]
-    knowledge.notes = [Note(id: "n1", table: "report_adx_hour", column: "dsp_id", kind: .caveat, text: "0 表示自有广告 (house ads)", evidence: [],
-                            by: "ai:codex", at: now, fingerprint: "fp-report_adx_hour")]
+    knowledge.notes = [Note(id: "n1", table: "report_crm_hour", column: "dsp_id", kind: .caveat, text: "0 表示自有广告 (house ads)", evidence: [],
+                            by: "ai:codex", at: now, fingerprint: "fp-report_crm_hour")]
     knowledge.terms = [Term(id: "g1", term: "fill rate", synonyms: ["填充率"], definition: "Filled DSP requests over all requests",
-                            mapsTo: [.init(table: "report_adx_hour", expression: "SUM(dsp_fill) / SUM(dsp_request)")], by: "user", at: now)]
+                            mapsTo: [.init(table: "report_crm_hour", expression: "SUM(dsp_fill) / SUM(dsp_request)")], by: "user", at: now)]
     return knowledge
 }()
 
@@ -67,19 +67,19 @@ struct KnowledgeSearchTests {
     @Test func namesRankAboveColumnsAboveComments() {
         let (hits, _) = KnowledgeSearch.search("dsp", in: knowledge)
         #expect(hits.first == KnowledgeSearch.Hit(type: "table", name: "dsp", why: "name", score: 100))
-        #expect(hits.contains { $0.type == "column" && $0.name == "report_adx_hour.dsp_id" })
+        #expect(hits.contains { $0.type == "column" && $0.name == "report_crm_hour.dsp_id" })
         #expect(!hits.contains { $0.name == "old_report" }, "dropped tables are not results")
     }
 
     @Test func glossaryAndChineseText() {
-        #expect(KnowledgeSearch.search("填充率", in: knowledge).hits.first?.name == "report_adx_hour")
+        #expect(KnowledgeSearch.search("填充率", in: knowledge).hits.first?.name == "report_crm_hour")
         #expect(KnowledgeSearch.search("fill rate", in: knowledge).hits.first?.why == "term: fill rate")
-        #expect(KnowledgeSearch.search("小时报表", in: knowledge).hits.first?.name == "report_adx_hour", "CJK matches comment substrings")
+        #expect(KnowledgeSearch.search("小时报表", in: knowledge).hits.first?.name == "report_crm_hour", "CJK matches comment substrings")
         #expect(KnowledgeSearch.search("自有广告", in: knowledge).hits.contains { $0.type == "note" })
     }
 
     @Test func tokensAndLimits() {
-        #expect(KnowledgeSearch.search("reportAdxHour", in: knowledge).hits.first?.name == "report_adx_hour", "camelCase splits into tokens")
+        #expect(KnowledgeSearch.search("reportCrmHour", in: knowledge).hits.first?.name == "report_crm_hour", "camelCase splits into tokens")
         let (hits, truncated) = KnowledgeSearch.search("id", in: knowledge, limit: 3)
         #expect(hits.count == 3 && truncated)
         #expect(KnowledgeSearch.search("audit", in: knowledge, scopes: [.columns]).hits.isEmpty)
@@ -89,21 +89,21 @@ struct KnowledgeSearchTests {
 @Suite("Table explanations")
 struct TableExplanationTests {
     @Test func relationshipsNotesAndHints() throws {
-        let explanation = try #require(TableExplanation.explain(table: "report_adx_hour", in: knowledge, confidence: confidence,
-                                                                projects: [.init(id: "p1", path: "~/code/adx-server", name: "adx-server", gitRemote: nil,
+        let explanation = try #require(TableExplanation.explain(table: "report_crm_hour", in: knowledge, confidence: confidence,
+                                                                projects: [.init(id: "p1", path: "~/code/crm-server", name: "crm-server", gitRemote: nil,
                                                                                  addedAt: now, addedBy: "user")]))
         #expect(explanation.model == nil)
         #expect(explanation.columns.first == ["dt", "date", "K", ""])
-        let toDSP = try #require(explanation.relationships.first { $0.other == "dsp" && $0.on == "report_adx_hour.dsp_id = dsp.id" })
+        let toDSP = try #require(explanation.relationships.first { $0.other == "dsp" && $0.on == "report_crm_hour.dsp_id = dsp.id" })
         #expect(toDSP.direction == "out" && toDSP.cardinality == "n:1" && toDSP.confidence == 85 && toDSP.sources == ["code"])
-        #expect(!explanation.relationships.contains { $0.on == "report_adx_hour.hour = dsp.id" }, "rejected relationships are not shown")
-        #expect(explanation.relationships.contains { $0.other == "mv_report_adx_day" && $0.cardinality == "lineage" && $0.direction == "in" })
+        #expect(!explanation.relationships.contains { $0.on == "report_crm_hour.hour = dsp.id" }, "rejected relationships are not shown")
+        #expect(explanation.relationships.contains { $0.other == "mv_report_crm_day" && $0.cardinality == "lineage" && $0.direction == "in" })
         #expect(explanation.notes.map(\.id) == ["n1"])
         #expect(explanation.terms.first?.term == "fill rate")
-        #expect(explanation.usedBy == [TableExplanation.Usage(project: "adx-server", path: "internal/report/dao.go", line: 120, symbol: "ReportDAO.ByDSP")])
+        #expect(explanation.usedBy == [TableExplanation.Usage(project: "crm-server", path: "internal/report/dao.go", line: 120, symbol: "ReportDAO.ByDSP")])
         #expect(explanation.hints.contains { $0.contains("partition key `dt`") })
         #expect(explanation.hints.contains { $0.contains("primary key") })
-        #expect(explanation.hints.contains { $0.contains("mv_report_adx_day") })
+        #expect(explanation.hints.contains { $0.contains("mv_report_crm_day") })
         #expect(TableExplanation.explain(table: "nope", in: knowledge, confidence: confidence, projects: []) == nil)
     }
 
@@ -116,30 +116,30 @@ struct TableExplanationTests {
 @Suite("Join paths")
 struct JoinPathTests {
     @Test func shortestPathWithConditionsAndSQL() throws {
-        let result = JoinPathFinder.find(from: "report_adx_hour", to: "publisher", in: knowledge, confidence: confidence)
+        let result = JoinPathFinder.find(from: "report_crm_hour", to: "publisher", in: knowledge, confidence: confidence)
         let best = try #require(result.paths.first)
         #expect(best.steps.map(\.join) == ["app", "publisher"])
-        #expect(best.steps.map(\.on) == ["report_adx_hour.app_id = app.id", "app.publisher_id = publisher.id"])
+        #expect(best.steps.map(\.on) == ["report_crm_hour.app_id = app.id", "app.publisher_id = publisher.id"])
         #expect(best.minConfidence == 60)
-        #expect(best.sql == "FROM adx.report_adx_hour\nJOIN adx.app ON report_adx_hour.app_id = app.id\nJOIN adx.publisher ON app.publisher_id = publisher.id",
+        #expect(best.sql == "FROM crm.report_crm_hour\nJOIN crm.app ON report_crm_hour.app_id = app.id\nJOIN crm.publisher ON app.publisher_id = publisher.id",
                 "tables are schema-qualified, so run_query never resolves them through another schema on the search path")
         #expect(result.excluded.belowMinimum == 1, "the 20% grain guess is not a path")
         #expect(result.excluded.stale == 1)
     }
 
     @Test func fanOutIsWarned() throws {
-        let result = JoinPathFinder.find(from: "report_adx_hour", to: "report_app_day", in: knowledge, confidence: confidence)
+        let result = JoinPathFinder.find(from: "report_crm_hour", to: "report_app_day", in: knowledge, confidence: confidence)
         let best = try #require(result.paths.first)
         #expect(best.steps.map(\.join) == ["app", "report_app_day"])
         #expect(best.warnings.contains { $0.contains("aggregate each side") })
     }
 
     @Test func throughAndAlternativesAndNoPath() throws {
-        let through = JoinPathFinder.find(from: "report_adx_hour", to: "publisher", through: ["app"], in: knowledge, confidence: confidence)
+        let through = JoinPathFinder.find(from: "report_crm_hour", to: "publisher", through: ["app"], in: knowledge, confidence: confidence)
         #expect(through.paths.first?.steps.map(\.join) == ["app", "publisher"])
-        let none = JoinPathFinder.find(from: "dsp", to: "adx_audit_log", in: knowledge, confidence: confidence)
+        let none = JoinPathFinder.find(from: "dsp", to: "crm_audit_log", in: knowledge, confidence: confidence)
         #expect(none.paths.isEmpty)
-        #expect(none.nearest?.from.contains("report_adx_hour") == true)
+        #expect(none.nearest?.from.contains("report_crm_hour") == true)
         let low = JoinPathFinder.find(from: "report_app_day", to: "publisher", in: knowledge, confidence: confidence, minConfidence: 10, alternatives: 3)
         #expect(low.paths.count == 2, "the direct grain guess and the path through app")
         #expect(low.paths[0].minConfidence >= low.paths[1].minConfidence || low.paths[0].steps.count < low.paths[1].steps.count)
@@ -151,15 +151,15 @@ struct KnowledgeDiagramTests {
     @Test func connectedComponentsAndPrefixClusters() {
         let areas = SubjectAreas.areas(in: knowledge, confidence: confidence)
         let connected = areas.filter { $0.source == "connected" }
-        #expect(connected.contains { Set($0.tables) == ["report_adx_hour", "dsp", "app", "publisher", "report_app_day"] })
-        #expect(areas.contains { $0.source == "prefix" && $0.name == "adx_*" && $0.tables == ["adx_audit_detail", "adx_audit_log", "adx_audit_rule"] })
+        #expect(connected.contains { Set($0.tables) == ["report_crm_hour", "dsp", "app", "publisher", "report_app_day"] })
+        #expect(areas.contains { $0.source == "prefix" && $0.name == "crm_*" && $0.tables == ["crm_audit_detail", "crm_audit_log", "crm_audit_rule"] })
     }
 
     @Test func mermaidWithKeysCardinalityAndConfidenceStyle() throws {
-        let diagram = try MermaidERDRenderer.render(tables: ["report_adx_hour", "dsp", "app"], in: knowledge, confidence: confidence, title: "ADX")
+        let diagram = try MermaidERDRenderer.render(tables: ["report_crm_hour", "dsp", "app"], in: knowledge, confidence: confidence, title: "CRM")
         #expect(diagram.mermaid.hasPrefix("erDiagram\n"))
-        #expect(diagram.mermaid.contains("report_adx_hour }o--|| dsp : \"dsp_id 85%\""))
-        #expect(diagram.mermaid.contains("report_adx_hour }o--|| app : \"app_id 70%\""))
+        #expect(diagram.mermaid.contains("report_crm_hour }o--|| dsp : \"dsp_id 85%\""))
+        #expect(diagram.mermaid.contains("report_crm_hour }o--|| app : \"app_id 70%\""))
         #expect(diagram.mermaid.contains("bigint dsp_id PK") && diagram.mermaid.contains("bigint app_id FK"))
         #expect(diagram.mermaid.contains("bigint id PK"))
         #expect(!diagram.mermaid.contains("hour 90%"), "rejected relationships are not drawn")
@@ -191,9 +191,9 @@ struct KnowledgeDiagramTests {
 struct KnowledgeSearchPhraseTests {
     @Test func aPhraseFindsTheTableWhoseCommentHoldsIt() {
         var knowledge = DatabaseKnowledge(key: DatabaseKey(cluster: ClusterKey(rawValue: "my://db:5432"), catalog: "ccinn", database: "kb_demo"))
-        knowledge.tables = [TableFacts(name: "report_adx_hour", kind: .table, comment: "ADX hourly report", fingerprint: "f", state: .fresh,
+        knowledge.tables = [TableFacts(name: "report_crm_hour", kind: .table, comment: "CRM hourly report", fingerprint: "f", state: .fresh,
                                        firstSeen: Date(timeIntervalSince1970: 0))]
         let hits = KnowledgeSearch.search("hourly report", in: knowledge).hits
-        #expect(hits.map(\.name) == ["report_adx_hour"], "\(hits)")
+        #expect(hits.map(\.name) == ["report_crm_hour"], "\(hits)")
     }
 }

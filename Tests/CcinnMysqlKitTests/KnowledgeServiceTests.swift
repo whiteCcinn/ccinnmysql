@@ -4,7 +4,7 @@ import Testing
 @testable import CcinnMysqlKit
 
 private let now = Date(timeIntervalSince1970: 1_800_000_000)
-private let key = DatabaseKey(cluster: ClusterKey(rawValue: "my://fe:9030"), catalog: "def", database: "adx")
+private let key = DatabaseKey(cluster: ClusterKey(rawValue: "my://fe:9030"), catalog: "def", database: "crm")
 
 private func temporaryStore() -> KnowledgeStore {
     KnowledgeStore(directory: FileManager.default.temporaryDirectory.appendingPathComponent("ccinn-kb-\(UUID().uuidString)", isDirectory: true))
@@ -48,21 +48,21 @@ struct KnowledgeServiceTests {
         let store = temporaryStore()
         defer { try? FileManager.default.removeItem(at: store.directory) }
         let home = FileManager.default.temporaryDirectory.appendingPathComponent("home-\(UUID().uuidString)", isDirectory: true)
-        let project = home.appendingPathComponent("code/adx", isDirectory: true)
-        let moved = home.appendingPathComponent("work/adx", isDirectory: true)
+        let project = home.appendingPathComponent("code/crm", isDirectory: true)
+        let moved = home.appendingPathComponent("work/crm", isDirectory: true)
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: moved, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: home) }
 
         let id = try KnowledgeService.linkProject(path: project.path, to: key, store: store, home: home, now: now)
         var index = try store.index()
-        #expect(index.projects.map(\.path) == ["~/code/adx"] && index.projects.first?.addedBy == "user")
+        #expect(index.projects.map(\.path) == ["~/code/crm"] && index.projects.first?.addedBy == "user")
         #expect(index.links.map(\.database) == [key.fileID])
         #expect(index.databases.map(\.key) == [key])
 
         try KnowledgeService.remapProject(id: id, to: moved.path, store: store, home: home)
         index = try store.index()
-        #expect(index.projects.map(\.path) == ["~/work/adx"])
+        #expect(index.projects.map(\.path) == ["~/work/crm"])
         #expect(index.links.count == 1, "links follow the project")
 
         try KnowledgeService.unlinkProject(id: id, from: key, store: store)
@@ -112,24 +112,24 @@ struct KnowledgeInferenceWiringTests {
         func column(_ name: String, key: Bool = false) -> ColumnFacts {
             ColumnFacts(name: name, type: "bigint", isKey: key, isNullable: !key)
         }
-        let schema = ExtractedSchema(database: "adx", serverVersion: nil, serverIdentifier: nil, tables: [
-            ExtractedTable(name: "report_adx_hour", kind: .table, columns: [column("dsp_id"), column("app_id")]),
+        let schema = ExtractedSchema(database: "crm", serverVersion: nil, serverIdentifier: nil, tables: [
+            ExtractedTable(name: "report_crm_hour", kind: .table, columns: [column("dsp_id"), column("app_id")]),
             ExtractedTable(name: "dsp", kind: .table, keys: TableFacts.Keys(primary: ["id"]), columns: [column("id", key: true)]),
             ExtractedTable(name: "app", kind: .table, keys: TableFacts.Keys(primary: ["id"]), columns: [column("id", key: true)]),
             ExtractedTable(name: "v_report", kind: .view, columns: [column("dsp_id")],
-                           definition: "SELECT r.dsp_id FROM report_adx_hour r JOIN dsp d ON r.dsp_id = d.id"),
-        ], foreignKeys: [ExtractedForeignKey(table: "report_adx_hour", columns: ["app_id"], referencedSchema: "adx", referencedTable: "app",
+                           definition: "SELECT r.dsp_id FROM report_crm_hour r JOIN dsp d ON r.dsp_id = d.id"),
+        ], foreignKeys: [ExtractedForeignKey(table: "report_crm_hour", columns: ["app_id"], referencedSchema: "crm", referencedTable: "app",
                                              referencedColumns: ["id"], isGuaranteed: true)])
         var knowledge = DatabaseKnowledge(key: key)
         var report = KnowledgeRefresher.Report()
         KnowledgeRefresher.updateTables(schema, in: &knowledge, now: now, report: &report)
-        let history = [QueryHistoryEntry(id: UUID(), sql: "SELECT * FROM report_adx_hour r JOIN dsp d ON r.dsp_id = d.id WHERE r.dt = '2026-11-19'",
-                                         database: "adx", executedAt: now, durationMilliseconds: 10, rowCount: 1, affectedRows: nil, errorMessage: nil)]
+        let history = [QueryHistoryEntry(id: UUID(), sql: "SELECT * FROM report_crm_hour r JOIN dsp d ON r.dsp_id = d.id WHERE r.dt = '2026-11-19'",
+                                         database: "crm", executedAt: now, durationMilliseconds: 10, rowCount: 1, affectedRows: nil, errorMessage: nil)]
         let machine = KnowledgeInference.machineRelationships(KnowledgeInferenceInput(schema: schema, knowledge: knowledge, history: history, now: now))
         let sources = Set(machine.flatMap { $0.evidence.map(\.source) })
         #expect(sources.isSuperset(of: [.declared, .naming, .history, .definition]), "\(sources)")
         let declared = try #require(machine.first { $0.evidence.contains { $0.source == .declared } })
-        #expect(declared.from.table == "report_adx_hour" && declared.to.table == "app" && declared.to.columns == ["id"])
+        #expect(declared.from.table == "report_crm_hour" && declared.to.table == "app" && declared.to.columns == ["id"])
     }
 }
 
@@ -137,7 +137,7 @@ struct KnowledgeInferenceWiringTests {
 struct RoutineMiningTests {
     @Test func aProcedureJoinIsDefinitionEvidenceNamedAfterIt() {
         func column(_ name: String, key: Bool = false) -> ColumnFacts { ColumnFacts(name: name, type: "bigint", isKey: key, isNullable: !key) }
-        let schema = ExtractedSchema(database: "adx", serverVersion: nil, serverIdentifier: nil, tables: [
+        let schema = ExtractedSchema(database: "crm", serverVersion: nil, serverIdentifier: nil, tables: [
             ExtractedTable(name: "orders", kind: .table, keys: TableFacts.Keys(primary: ["id"]), columns: [column("id", key: true), column("customer_id")]),
             ExtractedTable(name: "customers", kind: .table, keys: TableFacts.Keys(primary: ["id"]), columns: [column("id", key: true)]),
         ], routines: [ExtractedRoutine(kind: "routine", name: "sp_orders", sql: "BEGIN SELECT o.id FROM orders o JOIN customers c ON o.customer_id = c.id; END")])

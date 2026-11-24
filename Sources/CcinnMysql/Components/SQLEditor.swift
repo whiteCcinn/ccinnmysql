@@ -2,7 +2,10 @@ import AppKit
 import CcinnMysqlKit
 import SwiftUI
 
-typealias CompletionProvider = @MainActor (_ text: String, _ cursor: Int) async -> CompletionResult
+/// Computes the completions for `text` at `cursor` and hands them to `deliver`: at once with the schema already known,
+/// and again once missing schema has loaded.
+typealias CompletionProvider = @MainActor (_ text: String, _ cursor: Int,
+                                           _ deliver: @escaping @MainActor (CompletionResult) -> Void) async -> Void
 
 /// Lets a model read the editor's live text and change it the way typing does: one undoable edit that the editor's
 /// edit tracking (and so the diagnostics) sees.
@@ -157,7 +160,14 @@ struct SQLEditor: NSViewRepresentable {
         private var completionTask: Task<Void, Never>?
         private let completionModel = CompletionListModel()
         private var completionPanel: CompletionPanel?
-        private var activeCompletion: CompletionResult?
+        /// The list for the name being typed, narrowed to the current text; kept while the panel is hidden (no match,
+        /// nothing typed yet) so the next key can bring it back without asking the engine.
+        private var activeCompletion: ActiveCompletion?
+        /// The request in flight; its answers apply while no edit touched the text before its name.
+        private var pendingCompletion: PendingCompletion?
+        private var completionRequestCounter: UInt64 = 0
+        /// Where the cursor was at the last completion event; a selection change elsewhere ends the completion.
+        private var completionCursor: Int?
         private var observers: [any NSObjectProtocol] = []
 
         init(_ parent: SQLEditor) {
@@ -227,6 +237,7 @@ struct SQLEditor: NSViewRepresentable {
             }
             let text = editor.text
             if textView.string != text {
+                hideCompletions()
                 isApplyingBinding = true
                 textView.string = text
                 isApplyingBinding = false
@@ -265,7 +276,7 @@ struct SQLEditor: NSViewRepresentable {
             parent.onEdit?(edits)
             parent.text = textView.string
             textChanged()
-            scheduleCompletion(force: false)
+            completionDidEdit(edits)
         }
 
         func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
@@ -280,7 +291,8 @@ struct SQLEditor: NSViewRepresentable {
             if parent.selection != range { parent.selection = range }
             isTrackingSelection = false
             updateStatementHighlight()
-            if let active = activeCompletion, range.length > 0 || range.location < active.replacementRange.lowerBound {
+            // Typing moves the cursor too; that edit is followed in `completionDidEdit`. Any other move ends the completion.
+            if pendingEdits.isEmpty, let cursor = completionCursor, range != NSRange(location: cursor, length: 0) {
                 hideCompletions()
             }
         }
@@ -439,51 +451,150 @@ struct SQLEditor: NSViewRepresentable {
 
         // MARK: Completion
 
-        func forceCompletion() { scheduleCompletion(force: true) }
+        /// The engine's answer for the name being typed, narrowed to the current text.
+        private struct ActiveCompletion {
+            var result: CompletionResult
+            /// Opened by ⌃Space or after a dot: listed before anything is typed.
+            var opensWithoutPrefix: Bool
+        }
 
-        /// The items the popup lists; `nil` while it is hidden.
-        var visibleCompletions: [CompletionItem]? { completionPanel?.isVisible == true ? completionModel.items : nil }
+        /// A request in flight. Its answers describe the text it was made for; they still apply to the current text
+        /// while every edit since was at or after the start of their name.
+        private struct PendingCompletion {
+            let id: UInt64
+            /// Where the name at the request's cursor starts (letters, digits and a back-quote before the cursor).
+            let nameStart: Int
+            let opensWithoutPrefix: Bool
+            /// Where the earliest edit since the request starts; `Int.max` while there is none.
+            var earliestEdit = Int.max
+        }
 
-        private func scheduleCompletion(force: Bool) {
-            completionTask?.cancel()
-            guard let provider = parent.completionProvider, let textView, parent.isEditable else { return }
-            let selection = textView.selectedRange()
-            guard selection.length == 0 else { return hideCompletions() }
-            if !force {
-                let typed = lastInserted
-                let isWordInput = typed.count == 1 && typed.unicodeScalars.allSatisfy {
-                    CharacterSet.alphanumerics.contains($0) || $0 == "_" || $0 == "." || $0 == "`" || $0 == "$"
-                }
-                // A space may open the object list (`FROM ` → tables). Return and Tab never do: Return is pressed
-                // twice for a blank line, and the second press would take the list's first item.
-                let isSpace = typed == " "
-                guard isWordInput || isSpace else { return hideCompletions() }
-                // The space ended the word being completed: its list must not stay up, or be accepted, while the next
-                // one is computed.
-                if isSpace { hideCompletions() }
-            }
-            let text = textView.string
-            let cursor = selection.location
-            let afterDot = lastInserted == "."
-            completionTask = Task { [weak self] in
-                if !force { try? await Task.sleep(for: .milliseconds(70)) }
-                guard !Task.isCancelled else { return }
-                let result = await provider(text, cursor)
-                guard let self, !Task.isCancelled, let textView = self.textView,
-                      textView.string == text, textView.selectedRange().location == cursor else { return }
-                let exactOnly = result.items.count == 1 && result.items[0].label.caseInsensitiveCompare(result.prefix) == .orderedSame
-                let opensWithoutPrefix = force || afterDot || result.expectsObjectName
-                if result.items.isEmpty || exactOnly || (result.prefix.isEmpty && !opensWithoutPrefix) {
-                    self.hideCompletions()
-                } else {
-                    self.showCompletions(result)
+        /// What was typed, as far as completion cares.
+        private enum TypedInput {
+            case nameCharacter, backQuote, dot, space, deletion, other
+
+            init(_ typed: String) {
+                switch typed {
+                case "": self = .deletion
+                case "`", "``": self = .backQuote
+                case ".": self = .dot
+                case " ": self = .space
+                default:
+                    let isName = typed.count == 1 && typed.unicodeScalars.allSatisfy {
+                        CharacterSet.alphanumerics.contains($0) || $0 == "_" || $0 == "$"
+                    }
+                    self = isName ? .nameCharacter : .other
                 }
             }
         }
 
-        private func showCompletions(_ result: CompletionResult) {
+        func forceCompletion() {
+            hideCompletions()
+            guard let textView, parent.isEditable, textView.selectedRange().length == 0, !textView.hasMarkedText() else { return }
+            requestCompletion(opensWithoutPrefix: true)
+        }
+
+        /// The items the popup lists; `nil` while it is hidden.
+        var visibleCompletions: [CompletionItem]? { completionPanel?.isVisible == true ? completionModel.items : nil }
+
+        /// Follows an edit: the open list narrows at once while the same name is typed or deleted; a name starting, a
+        /// dot or a space asks the engine. Return and Tab never open a list: Return is pressed twice for a blank line,
+        /// and the second press would take the list's first item.
+        private func completionDidEdit(_ edits: [SQLTextEdit]) {
+            let earliest = edits.map(\.range.lowerBound).min() ?? Int.max
+            if var pending = pendingCompletion {
+                pending.earliestEdit = min(pending.earliestEdit, earliest)
+                pendingCompletion = pending
+            }
+            if let active = activeCompletion, earliest < active.result.replacementRange.lowerBound {
+                hideCompletions() // the text before the name changed: the list describes other text
+            }
+            guard parent.completionProvider != nil, let textView, parent.isEditable, !textView.hasMarkedText() else {
+                return hideCompletions()
+            }
+            let selection = textView.selectedRange()
+            guard selection.length == 0 else { return hideCompletions() }
+            completionCursor = selection.location
+            switch TypedInput(lastInserted) {
+            case .nameCharacter:
+                if activeCompletion != nil {
+                    if narrowActiveCompletion() { return }
+                } else if let pending = pendingCompletion, pending.earliestEdit >= pending.nameStart,
+                          selection.location >= pending.nameStart {
+                    return // the request in flight answers for this name; its answer is narrowed to this text
+                }
+                hideCompletions()
+                requestCompletion(opensWithoutPrefix: false)
+            case .deletion:
+                if !narrowActiveCompletion() { hideCompletions() }
+            case .backQuote, .space:
+                // A space ends the name being completed: its list must not stay up, or be accepted, while the next
+                // position is computed. Where a name must follow (`FROM `, `` FROM ` ``), the new list opens.
+                hideCompletions()
+                requestCompletion(opensWithoutPrefix: false)
+            case .dot:
+                hideCompletions()
+                requestCompletion(opensWithoutPrefix: true)
+            case .other:
+                hideCompletions()
+            }
+        }
+
+        /// Narrows the active list to the text at the cursor; `false` (and nothing changed) when the cursor left its name.
+        private func narrowActiveCompletion() -> Bool {
+            guard let active = activeCompletion, let textView, let storage = textView.textStorage else { return false }
+            let cursor = textView.selectedRange().location
+            guard let narrowed = active.result.narrowed(in: storage.mutableString, cursor: cursor) else { return false }
+            activeCompletion?.result = narrowed
+            completionCursor = cursor
+            presentActiveCompletion()
+            return true
+        }
+
+        private func requestCompletion(opensWithoutPrefix: Bool) {
+            guard let provider = parent.completionProvider, let textView, let storage = textView.textStorage else { return }
+            completionTask?.cancel()
+            let text = textView.string
+            let cursor = textView.selectedRange().location
+            completionRequestCounter &+= 1
+            let id = completionRequestCounter
+            pendingCompletion = PendingCompletion(id: id, nameStart: CompletionResult.nameStart(in: storage.mutableString, before: cursor),
+                                                  opensWithoutPrefix: opensWithoutPrefix)
+            completionCursor = cursor
+            completionTask = Task { [weak self] in
+                await provider(text, cursor) { result in self?.apply(result, request: id) }
+            }
+        }
+
+        /// An answer for request `id`, narrowed to the text typed since; dropped if the text before its name changed.
+        private func apply(_ result: CompletionResult, request id: UInt64) {
+            guard let pending = pendingCompletion, pending.id == id, let textView, let storage = textView.textStorage,
+                  !textView.hasMarkedText() else { return }
+            guard pending.earliestEdit >= result.replacementRange.lowerBound else { return hideCompletions() }
+            let selection = textView.selectedRange()
+            guard selection.length == 0, let narrowed = result.narrowed(in: storage.mutableString, cursor: selection.location) else {
+                return hideCompletions()
+            }
+            activeCompletion = ActiveCompletion(result: narrowed, opensWithoutPrefix: pending.opensWithoutPrefix)
+            completionCursor = selection.location
+            presentActiveCompletion()
+        }
+
+        /// Shows the active list, or hides the panel (keeping the list) when there is nothing worth showing.
+        private func presentActiveCompletion() {
+            guard let active = activeCompletion else { return hideCompletionPanel() }
+            let result = active.result
+            let exactOnly = result.items.count == 1 && result.items[0].label.caseInsensitiveCompare(result.prefix) == .orderedSame
+            let opensWithoutPrefix = active.opensWithoutPrefix || result.expectsObjectName
+            if result.items.isEmpty || exactOnly || (result.prefix.isEmpty && !opensWithoutPrefix) {
+                hideCompletionPanel()
+            } else {
+                showCompletionPanel(result)
+            }
+        }
+
+        private func showCompletionPanel(_ result: CompletionResult) {
             guard let textView, let window = textView.window else { return }
-            activeCompletion = result
             completionModel.update(items: result.items, prefix: result.prefix)
             let panel = completionPanel ?? CompletionPanel(model: completionModel)
             completionPanel = panel
@@ -499,20 +610,30 @@ struct SQLEditor: NSViewRepresentable {
             panel.orderFront(nil)
         }
 
-        func hideCompletions() {
-            completionTask?.cancel()
-            activeCompletion = nil
+        private func hideCompletionPanel() {
             guard let panel = completionPanel, panel.isVisible else { return }
             panel.parent?.removeChildWindow(panel)
             panel.orderOut(nil)
         }
 
+        /// Ends the completion: no list, no request.
+        func hideCompletions() {
+            completionTask?.cancel()
+            completionTask = nil
+            pendingCompletion = nil
+            activeCompletion = nil
+            completionCursor = nil
+            hideCompletionPanel()
+        }
+
+        /// Replaces the whole name at the cursor with `item`, from the list for exactly the current text.
         private func accept(_ item: CompletionItem) {
-            guard let textView, let active = activeCompletion else { return }
-            let cursor = textView.selectedRange().location
-            let start = min(active.replacementRange.lowerBound, cursor)
-            let range = NSRange(location: start, length: cursor - start)
+            guard let textView, let active = activeCompletion, pendingEdits.isEmpty,
+                  textView.selectedRange() == NSRange(location: completionCursor ?? -1, length: 0) else { return }
+            let replacement = active.result.replacementRange
+            let range = NSRange(location: replacement.lowerBound, length: replacement.count)
             hideCompletions()
+            guard NSMaxRange(range) <= (textView.string as NSString).length else { return }
             if item.kind == .function {
                 let name = item.insertText.hasSuffix("(") ? String(item.insertText.dropLast()) : item.insertText
                 textView.insertText(name + "()", replacementRange: range)
@@ -818,10 +939,12 @@ final class CompletionListModel {
     static let rowHeight: CGFloat = 24
     static let visibleRows = 9
 
+    /// A new prefix selects the best match; the same prefix again (schema loaded meanwhile) keeps the selected item.
     func update(items: [CompletionItem], prefix: String) {
+        let kept = prefix == self.prefix ? selectedItem?.id : nil
         self.items = items
         self.prefix = prefix
-        selectedIndex = 0
+        selectedIndex = kept.flatMap { id in items.firstIndex { $0.id == id } } ?? 0
     }
 
     var selectedItem: CompletionItem? { items.indices.contains(selectedIndex) ? items[selectedIndex] : nil }

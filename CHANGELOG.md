@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [1.6.1] - 2026-11-24
+
+### Fixed
+
+- **Completion keeps up with typing.** The suggestion list narrows with every key, Backspace included, without waiting: 1.6.0 waited 70 ms after each key and started over on the next one, so while typing a table name the list stayed closed, or kept showing the list for the earlier letters.
+- **Return and Tab insert the name you typed.** With `crm` listed and `_p` typed quickly, 1.6.0 could insert the first table of the older list (`crm_contact` instead of `crm_pipeline`).
+- **Names inside back-quotes and in the middle of a word.** Typing inside `` `us` `` or editing `us|ers` listed every table unfiltered and inserted the choice beside the existing text (`` `ususers` ``). The suggestions now match the letters before the cursor, the whole name is replaced, and a back-quoted name stays back-quoted.
+- **More places suggest tables:** after `STRAIGHT_JOIN`, `LOCK TABLES`, `FLUSH TABLES`, `CREATE INDEX … ON`, `DROP INDEX … ON`, `CREATE TRIGGER … ON`, `GRANT … ON`, `REVOKE … ON` and a statement-leading `EXPLAIN`; CTE names defined by the statement's `WITH`; names that start with digits (`2024_report`). `RENAME TABLE … TO` no longer suggests functions, and `FROM` inside `EXTRACT(… FROM …)` or `TRIM(… FROM …)` no longer suggests tables.
+- **Better order:** exact and prefix matches first, shorter names first among equals, numbers in natural order (`t2` before `t10`); scattered letters (`us` in `status_log`) no longer match.
+- **A new query tab knows its database right away.** A tab opened before the database list loaded had no current database until a statement ran, so completion offered no tables; it now uses the connection's default database, as its session does.
+- **Schema stays current.** Tables and columns cached for completion reload in the background after five minutes, so tables created by migrations or other clients appear without a refresh. DDL run in the editor reloads every database it names and the columns of the tables it changes. A database whose table list cannot be read is asked again after a minute instead of on every key. Missing tables and columns no longer hold the list back: it shows what is known at once and fills in when they arrive.
+- **Faster on large schemas:** with 20,000 tables, opening the list takes about 5 ms instead of 33 ms, and each key typed afterwards under 1 ms.
+
 ## [1.6.0] - 2026-11-19
 
 ### Added

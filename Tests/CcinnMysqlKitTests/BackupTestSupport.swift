@@ -26,7 +26,7 @@ enum BackupFixtures {
     }
 
     static func profile(id: UUID = UUID(), name: String, host: String, port: Int = 3306, username: String = "analyst",
-                        database: String? = "adx", updatedAt: Date? = nil) -> ConnectionProfile {
+                        database: String? = "crm", updatedAt: Date? = nil) -> ConnectionProfile {
         var profile = ConnectionProfile(id: id, name: name, host: host, port: port, username: username, defaultDatabase: database,
                                         createdAt: referenceDate)
         profile.updatedAt = updatedAt
@@ -56,7 +56,7 @@ enum BackupFixtures {
         return profile
     }
 
-    static let databaseKey = DatabaseKey(cluster: ClusterKey(rawValue: "my://db.prod:3306"), catalog: "def", database: "adx")
+    static let databaseKey = DatabaseKey(cluster: ClusterKey(rawValue: "my://db.prod:3306"), catalog: "def", database: "crm")
 
     static func note(_ id: String, text: String, at offset: TimeInterval) -> Note {
         Note(id: id, table: "report", column: nil, kind: .description, text: text, evidence: [], by: "user", at: date(offset), fingerprint: nil)
@@ -94,7 +94,7 @@ enum BackupFixtures {
     }
 
     static func historyEntry(_ sql: String, at offset: TimeInterval, id: UUID = UUID()) -> QueryHistoryEntry {
-        QueryHistoryEntry(id: id, sql: sql, database: "adx", executedAt: date(offset), durationMilliseconds: 12)
+        QueryHistoryEntry(id: id, sql: sql, database: "crm", executedAt: date(offset), durationMilliseconds: 12)
     }
 
     /// A bundle as the reader would return it.

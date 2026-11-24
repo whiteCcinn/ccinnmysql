@@ -10,7 +10,7 @@ private typealias F = BackupFixtures
 struct LegacyKnowledgeImportTests {
     private let profile = F.profile(name: "prod", host: "db.prod")
     private let home = "/Users/me"
-    private var key: DatabaseKey { DatabaseKey(cluster: ClusterKey(profile: profile), catalog: "def", database: "adx") }
+    private var key: DatabaseKey { DatabaseKey(cluster: ClusterKey(profile: profile), catalog: "def", database: "crm") }
 
     private func store() -> KnowledgeStore {
         KnowledgeStore(directory: F.temporaryDirectory().appendingPathComponent("Knowledge", isDirectory: true))
@@ -26,7 +26,7 @@ struct LegacyKnowledgeImportTests {
         return url
     }
 
-    private func noted(_ database: String = "adx", _ table: String = "report", _ text: String = "revenue in USD") -> L.KnowledgeBase {
+    private func noted(_ database: String = "crm", _ table: String = "report", _ text: String = "revenue in USD") -> L.KnowledgeBase {
         var base = L.KnowledgeBase(connectionID: profile.id, database: database)
         base.notes.tables[table] = L.TableNote(summary: text, author: "user", updatedAt: F.date(5))
         return base
@@ -41,24 +41,24 @@ struct LegacyKnowledgeImportTests {
         let kept = try write(noted(), in: store)
         let folder = kept.deletingLastPathComponent()
         try Data("{}".utf8).write(to: folder.appendingPathComponent(".hidden.json"))
-        try Data("{}".utf8).write(to: folder.appendingPathComponent("adx.json.corrupt-20261119-ab12"))
+        try Data("{}".utf8).write(to: folder.appendingPathComponent("crm.json.corrupt-20261119-ab12"))
         let notAConnection = store.directory.appendingPathComponent("databases", isDirectory: true)
         try FileManager.default.createDirectory(at: notAConnection, withIntermediateDirectories: true)
         try Data("{}".utf8).write(to: notAConnection.appendingPathComponent("x.json"))
         try Data("{}".utf8).write(to: store.directory.appendingPathComponent("index.json"))
 
         try FileManager.default.createSymbolicLink(at: folder.appendingPathComponent("linked.json"), withDestinationURL: kept)
-        #expect(LegacyKnowledgeImport.legacyFiles(in: store.directory).map(\.lastPathComponent) == ["adx.json"], "1.5 wrote no symbolic links")
+        #expect(LegacyKnowledgeImport.legacyFiles(in: store.directory).map(\.lastPathComponent) == ["crm.json"], "1.5 wrote no symbolic links")
         #expect(LegacyKnowledgeImport.legacyFiles(in: store.directory.appendingPathComponent("missing")).isEmpty)
     }
 
     @Test func notesTermsAndLinkedFoldersCarryOverOnceAndThe15FilesStay() throws {
         let store = store()
-        var adx = noted()
-        adx.notes.glossary["fill rate"] = L.GlossaryTerm(term: "Fill rate", definition: "Filled over requested.", tables: ["report"], author: "ai",
+        var crm = noted()
+        crm.notes.glossary["fill rate"] = L.GlossaryTerm(term: "Fill rate", definition: "Filled over requested.", tables: ["report"], author: "ai",
                                                          updatedAt: F.date(6))
-        adx.projects = [L.LinkedProject(name: "adx-server", path: "/Users/me/code/adx-server")]
-        let file = try write(adx, in: store)
+        crm.projects = [L.LinkedProject(name: "crm-server", path: "/Users/me/code/crm-server")]
+        let file = try write(crm, in: store)
 
         let record = try #require(try run(store))
         #expect(record.importedAt == F.date(100) && record.files == 1 && record.unreadableFiles == 0)
@@ -67,7 +67,7 @@ struct LegacyKnowledgeImportTests {
         #expect(knowledge.notes.map(\.text) == ["revenue in USD"] && knowledge.terms.map(\.term) == ["Fill rate"])
         let index = try store.index()
         #expect(index.databases.map(\.key) == [key])
-        #expect(index.projects.map(\.path) == ["~/code/adx-server"] && index.projects.first?.addedBy == "user", "a folder the user linked")
+        #expect(index.projects.map(\.path) == ["~/code/crm-server"] && index.projects.first?.addedBy == "user", "a folder the user linked")
         #expect(index.links.map(\.database) == [key.fileID])
         #expect(FileManager.default.fileExists(atPath: file.path), "1.5 still reads its files")
         #expect(LegacyKnowledgeImport.record(in: store) == record)
@@ -141,7 +141,7 @@ struct LegacyKnowledgeImportTests {
 
     @Test func filesWhoseKnowledgeIsAllFactsAreRecordedAsDone() throws {
         let store = store()
-        var facts = L.KnowledgeBase(connectionID: profile.id, database: "adx")
+        var facts = L.KnowledgeBase(connectionID: profile.id, database: "crm")
         facts.snapshot = L.Snapshot(tables: [["name": "report"]])
         try write(facts, in: store)
 

@@ -590,9 +590,11 @@ final class SQLTabModel {
         return (parsed, SQLDiagnostic(range: marked, scope: anchor, severity: .error, source: .server, message: located.message, origin: origin))
     }
 
+    /// After DDL: reloads the object lists of every database the statement names and drops the cached columns of its
+    /// tables, so the sidebar and completion show the change.
     private func refreshSidebar(after sql: String) {
-        guard let database else { return }
-        if SessionContextChange.parse(sql) == nil { workspace.loadObjects(database: database, force: true) }
+        guard SessionContextChange.parse(sql) == nil else { return }
+        workspace.schemaDidChange(after: sql, currentDatabase: database)
     }
 
     /// Parses a JSON or tree plan off the main actor.
@@ -685,14 +687,18 @@ final class SQLTabModel {
 
     // MARK: Completion
 
-    func completions(text: String, cursor: Int) async -> CompletionResult {
+    /// Delivers what the cached schema allows at once, then again once missing object lists and columns have loaded.
+    /// Schema older than `SchemaCachePolicy.maxAge` reloads in the background for the next request.
+    func completions(text: String, cursor: Int, deliver: @escaping @MainActor (CompletionResult) -> Void) async {
         let database = self.database
-        var result = await Self.complete(text: text, cursor: cursor, schema: workspace.completionSnapshot(currentDatabase: database))
-        if result.needsMoreSchema {
-            await workspace.ensureSchema(columns: result.missingColumns, databases: result.missingDatabases)
-            result = await Self.complete(text: text, cursor: cursor, schema: workspace.completionSnapshot(currentDatabase: database))
-        }
-        return result
+        let version = workspace.completionSchemaVersion
+        let first = await Self.complete(text: text, cursor: cursor, schema: workspace.completionSnapshot(currentDatabase: database))
+        deliver(first)
+        workspace.refreshStaleSchema(databases: [database].compactMap { $0 } + first.missingDatabases)
+        guard first.needsMoreSchema, !Task.isCancelled else { return }
+        await workspace.ensureSchema(columns: first.missingColumns, databases: first.missingDatabases)
+        guard !Task.isCancelled, workspace.completionSchemaVersion != version else { return }
+        deliver(await Self.complete(text: text, cursor: cursor, schema: workspace.completionSnapshot(currentDatabase: database)))
     }
 
     /// Runs the (pure) completion engine off the main actor.

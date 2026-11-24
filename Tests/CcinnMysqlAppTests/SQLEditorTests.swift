@@ -4,6 +4,12 @@ import SwiftUI
 import Testing
 @testable import CcinnMysql
 
+/// How often the editor asked its completion provider.
+@MainActor
+private final class CallCounter {
+    var count = 0
+}
+
 /// An editor wired like `SQLWorkbenchView` wires it, with the binding and the model's diagnostics held
 /// here, so tests can play the model's part (including lagging behind the text view).
 @MainActor
@@ -13,15 +19,23 @@ private final class EditorHarness {
     var diagnostics: [SQLDiagnostic] = []
     var reportedEdits: [SQLTextEdit] = []
     var completionProvider: CompletionProvider?
+    let completionRequests: CallCounter
     let textView: SQLTextView
     let coordinator: SQLEditor.Coordinator
     private let window: NSWindow
 
-    init(_ text: String, diagnostics: [SQLDiagnostic] = [], completionSchema: SchemaSnapshot? = nil) {
+    /// `providerDelay` plays a provider that waits for the server before it answers.
+    init(_ text: String, diagnostics: [SQLDiagnostic] = [], completionSchema: SchemaSnapshot? = nil, providerDelay: Duration = .zero) {
         self.text = text
         self.diagnostics = diagnostics
+        let requests = CallCounter()
+        completionRequests = requests
         if let completionSchema {
-            completionProvider = { text, cursor in CompletionEngine.complete(text: text, cursor: cursor, schema: completionSchema) }
+            completionProvider = { text, cursor, deliver in
+                requests.count += 1
+                if providerDelay > .zero { try? await Task.sleep(for: providerDelay) }
+                deliver(CompletionEngine.complete(text: text, cursor: cursor, schema: completionSchema))
+            }
         }
         textView = SQLTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 400))
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 400), styleMask: [.titled], backing: .buffered, defer: true)
@@ -393,8 +407,8 @@ struct SQLEditorTests {
 @MainActor
 struct CompletionPopupTests {
     static let schema = SchemaSnapshot(
-        currentDatabase: "taku", databases: ["taku"],
-        objectsByDatabase: ["taku": ["adx_demand", "adx_publisher", "dws_uparpu_adx_funnel_reason_hi", "mv_report_adx_hour"]
+        currentDatabase: "demo", databases: ["demo"],
+        objectsByDatabase: ["demo": ["crm_contact", "crm_pipeline", "dw_sales_crm_funnel_daily", "mv_report_crm_hour"]
             .map { SchemaSnapshot.ObjectEntry(name: $0, kind: .table) }])
 
     private func item(_ label: String) -> CompletionItem { CompletionItem(kind: .keyword, label: label, insertText: label, detail: nil) }
@@ -421,7 +435,7 @@ struct CompletionPopupTests {
         return try pixels(of: panel)
     }
 
-    // The popup kept drawing the first list it showed: `from` listed SELECT/SET, `adx_publisher` the `adx` list.
+    // The popup kept drawing the first list it showed: `from` listed SELECT/SET, `crm_pipeline` the `crm` list.
     @Test func theListDrawsTheLatestResult() throws {
         _ = NSApplication.shared
         let first = ["SELECT", "SET"].map(item)
@@ -448,11 +462,11 @@ struct CompletionPopupTests {
         let harness = EditorHarness("select * from", completionSchema: Self.schema)
         harness.typeAtEnd(" ")
         let labels = try #require(try await harness.shownCompletions())
-        #expect(Array(labels.prefix(4)) == ["adx_demand", "adx_publisher", "dws_uparpu_adx_funnel_reason_hi", "mv_report_adx_hour"])
+        #expect(Array(labels.prefix(4)) == ["crm_contact", "crm_pipeline", "dw_sales_crm_funnel_daily", "mv_report_crm_hour"])
     }
 
     @Test func spaceElsewhereKeepsTheListClosed() async throws {
-        for text in ["select *", "select * from adx_demand", "select * from adx_demand order by id desc"] {
+        for text in ["select *", "select * from crm_contact", "select * from crm_contact order by id desc"] {
             let harness = EditorHarness(text, completionSchema: Self.schema)
             harness.typeAtEnd(" ")
             #expect(try await harness.shownCompletions(within: .milliseconds(300)) == nil, "\(text)")
@@ -468,27 +482,116 @@ struct CompletionPopupTests {
         }
     }
 
-    // A list computed for `adx` must not stay up (and be accepted with Return) once a space ends the name.
+    // A list computed for `crm` must not stay up (and be accepted with Return) once a space ends the name.
     @Test func whitespaceClosesTheListAtOnce() async throws {
         let harness = EditorHarness("select * from ", completionSchema: Self.schema)
-        harness.typeAtEnd("adx")
-        #expect(try await harness.shownCompletions()?.first == "adx_demand")
+        harness.typeAtEnd("crm")
+        #expect(try await harness.shownCompletions()?.first == "crm_contact")
         harness.typeAtEnd(" ")
+        #expect(harness.coordinator.visibleCompletions == nil)
+        #expect(try await harness.shownCompletions(within: .milliseconds(300)) == nil)
+    }
+
+    // Spec "Suggestions follow typing": the list follows each key at once, and Return takes the name typed.
+    @Test func theListFollowsEveryKeyAndReturnTakesTheNameTyped() async throws {
+        let harness = EditorHarness("select * from ", completionSchema: Self.schema)
+        harness.typeAtEnd("crm")
+        #expect(try await harness.shownCompletions()?.count == 4)
+        harness.typeAtEnd("_p")
+        #expect(harness.coordinator.visibleCompletions?.map(\.label) == ["crm_pipeline"], "no wait for another request")
+        harness.textView.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        #expect(harness.textView.string == "select * from crm_pipeline")
+    }
+
+    @Test func burstTypingShowsAListAfterEveryKey() async throws {
+        let harness = EditorHarness("select * from ", completionSchema: Self.schema)
+        harness.typeAtEnd("c")
+        #expect(try await harness.shownCompletions() != nil)
+        for character in "rm_pi" {
+            harness.typeAtEnd(String(character))
+            #expect(harness.coordinator.visibleCompletions != nil, "after \(character)")
+        }
+        #expect(harness.coordinator.visibleCompletions?.map(\.label) == ["crm_pipeline"])
+    }
+
+    // Spec "Backspace keeps the list".
+    @Test func backspaceNarrowsTheListInsteadOfClosingIt() async throws {
+        let harness = EditorHarness("select * from ", completionSchema: Self.schema)
+        harness.typeAtEnd("crm_p")
+        #expect(try await harness.shownCompletions() == ["crm_pipeline"])
+        harness.textView.deleteBackward(nil)
+        #expect(harness.coordinator.visibleCompletions?.map(\.label).prefix(2) == ["crm_contact", "crm_pipeline"])
+        for _ in 0..<4 { harness.textView.deleteBackward(nil) }
+        #expect(harness.coordinator.visibleCompletions?.map(\.label) == ["crm_contact", "crm_pipeline", "dw_sales_crm_funnel_daily",
+                                                                         "mv_report_crm_hour", "demo"],
+                "an empty name after FROM lists every table, and the databases")
+        harness.textView.deleteBackward(nil)
+        #expect(harness.coordinator.visibleCompletions == nil, "the space after FROM is gone")
+    }
+
+    // A server round trip outlasts several keys: its answer is narrowed to what was typed since, not thrown away.
+    @Test func aLateAnswerIsNarrowedToTheTextTypedSinceTheRequest() async throws {
+        let harness = EditorHarness("select * from ", completionSchema: Self.schema, providerDelay: .milliseconds(150))
+        harness.typeAtEnd("c")
+        try await Task.sleep(for: .milliseconds(30))
+        harness.typeAtEnd("rm_p")
+        #expect(try await harness.shownCompletions() == ["crm_pipeline"])
+        #expect(harness.completionRequests.count == 1, "the keys typed while it ran did not ask again")
+    }
+
+    // The provider answers with what it knows, then again once missing tables have loaded.
+    @Test func aSecondAnswerReplacesTheFirst() async throws {
+        let harness = EditorHarness("select * from ")
+        let empty = SchemaSnapshot(currentDatabase: "demo", databases: ["demo"], objectsByDatabase: ["demo": []])
+        harness.completionProvider = { text, cursor, deliver in
+            deliver(CompletionEngine.complete(text: text, cursor: cursor, schema: empty))
+            try? await Task.sleep(for: .milliseconds(80))
+            deliver(CompletionEngine.complete(text: text, cursor: cursor, schema: Self.schema))
+        }
+        harness.render()
+        harness.typeAtEnd("crm_p")
+        #expect(try await harness.shownCompletions() == ["crm_pipeline"])
+    }
+
+    // Spec "Back-quoted name": the editor closes the back-quote; the name inside is completed back-quoted.
+    @Test func aBackQuotedNameIsCompletedInsideItsQuotes() async throws {
+        let harness = EditorHarness("select * from ", completionSchema: Self.schema)
+        harness.typeAtEnd("`")
+        #expect(harness.textView.string == "select * from ``")
+        for character in "crm_p" { harness.type(String(character), at: harness.textView.selectedRange().location) }
+        #expect(try await harness.shownCompletions() == ["crm_pipeline"])
+        harness.textView.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        #expect(harness.textView.string == "select * from `crm_pipeline`")
+    }
+
+    @Test func typingInsideANameReplacesTheWholeName() async throws {
+        let harness = EditorHarness("select * from crm_con", completionSchema: Self.schema)
+        harness.type("p", at: 18)
+        #expect(try await harness.shownCompletions() == ["crm_pipeline"])
+        harness.textView.doCommand(by: #selector(NSResponder.insertTab(_:)))
+        #expect(harness.textView.string == "select * from crm_pipeline")
+    }
+
+    @Test func anEditBeforeTheNameClosesTheList() async throws {
+        let harness = EditorHarness("select * from ", completionSchema: Self.schema)
+        harness.typeAtEnd("crm")
+        #expect(try await harness.shownCompletions() != nil)
+        harness.type("x", at: 0)
         #expect(harness.coordinator.visibleCompletions == nil)
         #expect(try await harness.shownCompletions(within: .milliseconds(300)) == nil)
     }
 
     @Test func typingNarrowsTheListUntilOnlyTheExactNameIsLeft() async throws {
         let harness = EditorHarness("select * from ", completionSchema: Self.schema)
-        harness.typeAtEnd("adx")
+        harness.typeAtEnd("crm")
         #expect(try await harness.shownCompletions()?.count == 4)
         harness.typeAtEnd("_p")
         let deadline = ContinuousClock.now + .seconds(2)
-        while harness.coordinator.visibleCompletions?.map(\.label) != ["adx_publisher"], ContinuousClock.now < deadline {
+        while harness.coordinator.visibleCompletions?.map(\.label) != ["crm_pipeline"], ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
-        #expect(harness.coordinator.visibleCompletions?.map(\.label) == ["adx_publisher"])
-        harness.typeAtEnd("ublisher")
+        #expect(harness.coordinator.visibleCompletions?.map(\.label) == ["crm_pipeline"])
+        harness.typeAtEnd("ipeline")
         try await Task.sleep(for: .milliseconds(300))
         #expect(harness.coordinator.visibleCompletions == nil, "only the exact name is left")
     }

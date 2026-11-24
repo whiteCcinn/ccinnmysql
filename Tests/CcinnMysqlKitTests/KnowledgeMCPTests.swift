@@ -12,7 +12,7 @@ private func table(_ name: String, _ columns: [String]) -> TableFacts {
 }
 
 private func knowledge() -> DatabaseKnowledge {
-    var knowledge = DatabaseKnowledge(key: DatabaseKey(cluster: ClusterKey(rawValue: "my://fe:9030"), catalog: "def", database: "adx"))
+    var knowledge = DatabaseKnowledge(key: DatabaseKey(cluster: ClusterKey(rawValue: "my://fe:9030"), catalog: "def", database: "crm"))
     knowledge.tables = [table("report", ["id", "dsp_id"]), table("dsp", ["id"]), table("secret_salary", ["id", "dsp_id"])]
     knowledge.relationships = [
         Relationship(from: .init(table: "report", columns: ["dsp_id"]), to: .init(table: "dsp", columns: ["id"]), kind: .manyToOne,
@@ -25,7 +25,7 @@ private func knowledge() -> DatabaseKnowledge {
     knowledge.notes = [Note(id: "n-user", table: "report", column: nil, kind: .description, text: "by the user", evidence: [], by: "user", at: now, fingerprint: "fp-report"),
                        Note(id: "n-hidden", table: "secret_salary", column: nil, kind: .caveat, text: "x", evidence: [], by: "ai:codex", at: now, fingerprint: nil)]
     knowledge.terms = [Term(id: "g1", term: "salary", synonyms: [], definition: "x", mapsTo: [.init(table: "secret_salary")], by: "user", at: now),
-                       Term(id: "g2", term: "ADX", synonyms: [], definition: "ad exchange", mapsTo: [], by: "user", at: now)]
+                       Term(id: "g2", term: "CRM", synonyms: [], definition: "ad exchange", mapsTo: [], by: "user", at: now)]
     knowledge.areas = [SubjectArea(id: "a1", name: "pay", tables: ["secret_salary"], description: nil, by: "user", at: now)]
     return knowledge
 }
@@ -62,11 +62,11 @@ struct KnowledgeMCPToolListTests {
         let server = MCPServer(info: MCPServerInfo(name: "t", title: "t", version: "1", instructions: "i"), provider: tools, send: { await sent.append($0) })
         await server.receive(#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"claude-code"}}}"#)
         await server.receive(#"{"jsonrpc":"2.0","id":2,"method":"prompts/list"}"#)
-        await server.receive(#"{"jsonrpc":"2.0","id":3,"method":"prompts/get","params":{"name":"build_knowledge","arguments":{"database":"adx"}}}"#)
+        await server.receive(#"{"jsonrpc":"2.0","id":3,"method":"prompts/get","params":{"name":"build_knowledge","arguments":{"database":"crm"}}}"#)
         let messages = await sent.all
         #expect(messages[0].contains(#""prompts":{"listChanged":false}"#))
         #expect(messages[1].contains("build_knowledge") && messages[1].contains("answer_with_knowledge"))
-        #expect(messages[2].contains("link_project") && messages[2].contains("`adx`"))
+        #expect(messages[2].contains("link_project") && messages[2].contains("`crm`"))
     }
 }
 
@@ -82,7 +82,7 @@ struct KnowledgeVisibilityTests {
         #expect(filtered.tables.map(\.name) == ["report", "dsp"])
         #expect(filtered.relationships.count == 1, "the salary relationship and the unseen admin database are gone")
         #expect(filtered.notes.map(\.id) == ["n-user"])
-        #expect(filtered.terms.map(\.term) == ["ADX"], "a term about hidden tables only would reveal them")
+        #expect(filtered.terms.map(\.term) == ["CRM"], "a term about hidden tables only would reveal them")
         #expect(filtered.areas.isEmpty)
         let withAdmin = KnowledgeMCP.filter(knowledge(), visible: ["report", "dsp"], visibleOther: ["admin": ["dsp"]])
         #expect(withAdmin.relationships.count == 2)
@@ -103,10 +103,10 @@ struct KnowledgeWriteTests {
 
     @Test func projectPathsAreRealDirectoriesStoredRelativeToHome() throws {
         let exists = { (path: String) -> Bool in path.hasPrefix("/Users/someone/code") || path.hasPrefix("/Volumes/work") }
-        #expect(try KnowledgeMCP.projectPath("/Users/someone/code/adx/", home: home, isDirectory: exists) == "~/code/adx")
-        #expect(try KnowledgeMCP.projectPath("~/code/adx", home: home, isDirectory: exists) == "~/code/adx")
-        #expect(try KnowledgeMCP.projectPath("/Volumes/work/adx", home: home, isDirectory: exists) == "/Volumes/work/adx")
-        for refused in ["code/adx", "/", "/Users/someone", "/Users/someone/missing"] {
+        #expect(try KnowledgeMCP.projectPath("/Users/someone/code/crm/", home: home, isDirectory: exists) == "~/code/crm")
+        #expect(try KnowledgeMCP.projectPath("~/code/crm", home: home, isDirectory: exists) == "~/code/crm")
+        #expect(try KnowledgeMCP.projectPath("/Volumes/work/crm", home: home, isDirectory: exists) == "/Volumes/work/crm")
+        for refused in ["code/crm", "/", "/Users/someone", "/Users/someone/missing"] {
             #expect(throws: MCPToolError.self, "\(refused)") { try KnowledgeMCP.projectPath(refused, home: home, isDirectory: exists) }
         }
     }
@@ -115,9 +115,9 @@ struct KnowledgeWriteTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory.appendingPathComponent(".git"), withIntermediateDirectories: true)
-        try "[core]\n\tbare = false\n[remote \"origin\"]\n\turl = https://user:ghp_secret@github.com/org/adx-server.git\n".write(
+        try "[core]\n\tbare = false\n[remote \"origin\"]\n\turl = https://user:ghp_secret@github.com/org/crm-server.git\n".write(
             to: directory.appendingPathComponent(".git/config"), atomically: true, encoding: .utf8)
-        #expect(KnowledgeMCP.gitRemote(of: directory.path) == "https://github.com/org/adx-server.git")
+        #expect(KnowledgeMCP.gitRemote(of: directory.path) == "https://github.com/org/crm-server.git")
     }
 
     @Test func notesNeedRealTablesAndColumns() throws {
@@ -136,9 +136,9 @@ struct KnowledgeWriteTests {
 
     @Test func relationshipsCarryEvidenceAndMergeByID() throws {
         var target = knowledge()
-        let project = KnowledgeIndex.Project(id: "p1", path: "~/code/adx", name: "adx", gitRemote: nil, addedAt: now, addedBy: "user")
+        let project = KnowledgeIndex.Project(id: "p1", path: "~/code/crm", name: "crm", gitRemote: nil, addedAt: now, addedBy: "user")
         let item = #"[{"from_table":"report","from_columns":["dsp_id"],"to_table":"dsp","to_columns":["id"],"verdict":"assert","#
-            + #""evidence":[{"type":"code","project_path":"/Users/someone/code/adx/internal","path":"dao.go","line":12,"symbol":"ByDSP"}]}]"#
+            + #""evidence":[{"type":"code","project_path":"/Users/someone/code/crm/internal","path":"dao.go","line":12,"symbol":"ByDSP"}]}]"#
         let ids = try KnowledgeMCP.addRelationships(try items(item), to: &target, by: "ai:claude-code", now: now, projects: [project], home: home)
         let relationship = try #require(target.relationships.first { $0.id == ids.first })
         #expect(relationship.evidence.map(\.source) == [.naming, .code], "joins the inferred record with the same ends")
@@ -158,7 +158,7 @@ struct KnowledgeWriteTests {
     @Test func aiCannotChangeOrRemoveWhatTheUserWrote() throws {
         var target = knowledge()
         #expect(throws: MCPToolError.self) {
-            try KnowledgeMCP.defineTerms(try items(#"[{"term":"ADX","definition":"changed"}]"#), in: &target, by: "ai:x", now: now)
+            try KnowledgeMCP.defineTerms(try items(#"[{"term":"CRM","definition":"changed"}]"#), in: &target, by: "ai:x", now: now)
         }
         #expect(throws: MCPToolError.self) { try KnowledgeMCP.remove(ids: ["n-user"], from: &target, by: "ai:x", now: now) }
         #expect(throws: MCPToolError.self) {

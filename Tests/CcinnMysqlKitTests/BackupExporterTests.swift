@@ -22,7 +22,7 @@ private struct SourceMac {
         try secrets.setSecret(F.sshSecret, for: SecretKey(profileID: tunnelled.id, kind: .sshSecret))
         try knowledge.updateDatabase(F.databaseKey) { $0.notes = [F.note("n1", text: "revenue in USD", at: 10)] }
         try knowledge.updateIndex { index in
-            index.projects = [F.project("p1", path: "/Users/old/code/adx", remote: "github.com/org/adx"),
+            index.projects = [F.project("p1", path: "/Users/old/code/crm", remote: "github.com/org/crm"),
                               F.project("p2", path: "/Volumes/Work/ssp")]
         }
         var failed = F.historyEntry("CREATE USER bob IDENTIFIED BY 'leaked-pw' FOO", at: 3)
@@ -76,7 +76,7 @@ struct BackupExporterTests {
         #expect(verified.serverPublicKeyPath == "/etc/mysql/server-key.pem", "outside home it stays as it is")
         #expect(verified.tlsMode == .verifyIdentity)
         let paths = bundle.payload.knowledge?.index.projects.map(\.path)
-        #expect(paths == ["~/code/adx", "/Volumes/Work/ssp"], "paths outside home stay as they are")
+        #expect(paths == ["~/code/crm", "/Volumes/Work/ssp"], "paths outside home stay as they are")
     }
 
     @Test func secretsAreSealedOnlyWithAPassphrase() throws {

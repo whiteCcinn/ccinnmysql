@@ -4,16 +4,16 @@ import Testing
 @testable import CcinnMysqlKit
 
 private let now = Date(timeIntervalSince1970: 1_800_000_000)
-private let key = DatabaseKey(cluster: ClusterKey(rawValue: "my://db:3306"), catalog: "def", database: "adx")
+private let key = DatabaseKey(cluster: ClusterKey(rawValue: "my://db:3306"), catalog: "def", database: "crm")
 
 private func seeded(_ knowledge: inout DatabaseKnowledge) {
     knowledge.tables = [
-        TableFacts(name: "report_adx_hour", kind: .table, columns: [ColumnFacts(name: "dsp_id", type: "bigint", isKey: true)], fingerprint: "f1", state: .fresh, firstSeen: now),
+        TableFacts(name: "report_crm_hour", kind: .table, columns: [ColumnFacts(name: "dsp_id", type: "bigint", isKey: true)], fingerprint: "f1", state: .fresh, firstSeen: now),
         TableFacts(name: "dsp", kind: .table, keys: .init(primary: ["id"]), columns: [ColumnFacts(name: "id", type: "bigint", isKey: true)], fingerprint: "f2",
                    state: .fresh, firstSeen: now),
     ]
-    knowledge.relationships = [Relationship(from: .init(table: "report_adx_hour", columns: ["dsp_id"]), to: .init(table: "dsp", columns: ["id"]), kind: .manyToOne,
-                                            evidence: [Evidence(source: .naming, score: 60, at: now)], fingerprints: ["report_adx_hour": "f1", "dsp": "f2"])]
+    knowledge.relationships = [Relationship(from: .init(table: "report_crm_hour", columns: ["dsp_id"]), to: .init(table: "dsp", columns: ["id"]), kind: .manyToOne,
+                                            evidence: [Evidence(source: .naming, score: 60, at: now)], fingerprints: ["report_crm_hour": "f1", "dsp": "f2"])]
     knowledge.notes = [Note(id: "n1", table: "dsp", column: nil, kind: .description, text: "DSP partners", evidence: [], by: "ai:codex", at: now, fingerprint: "f2")]
     knowledge.refreshedAt = now
 }
@@ -69,7 +69,7 @@ struct KnowledgeTabModelTests {
         #expect(model.knowledge?.notes.isEmpty == true)
         #expect(model.knowledge?.tombstones.map(\.id) == ["n1"])
 
-        let project = FileManager.default.temporaryDirectory.appendingPathComponent("adx-server-\(UUID().uuidString)", isDirectory: true)
+        let project = FileManager.default.temporaryDirectory.appendingPathComponent("crm-server-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
         model.link(path: project.path)
         await model.load()
@@ -83,6 +83,6 @@ struct KnowledgeTabModelTests {
 
         #expect(model.diagramArea != nil)
         #expect(model.diagramText.hasPrefix("erDiagram"))
-        #expect(model.diagramText.contains("report_adx_hour"))
+        #expect(model.diagramText.contains("report_crm_hour"))
     }
 }

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Relationships guessed from names (design §2.5): `report_adx_hour.dsp_id` → `dsp.id`. Pure and deterministic.
+/// Relationships guessed from names (design §2.5): `report_crm_hour.dsp_id` → `dsp.id`. Pure and deterministic.
 ///
 /// 1. A table's entity is its lower-cased name without one warehouse prefix (`dim_`, `ods_`, …) and without trailing
 ///    grain or bookkeeping words (`_hour`, `_info`, `_v2`, …); variants are the remainder, its last word and simple
