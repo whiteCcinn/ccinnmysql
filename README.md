@@ -44,7 +44,7 @@ AI assistants face the same questions with less context: every session rediscove
 ## Features
 
 - **Schema browser** — schemas with tables grouped by storage engine (InnoDB, MyISAM, MEMORY, …), views, sequences, procedures, functions, triggers and events, each with its own icon; system schemas hidden until you ask for them.
-- **Table insights** — columns, indexes with per-prefix cardinality and visibility, foreign keys in both directions, partitions with bounds and sizes, row and size estimates, free space, DDL, a data preview, and findings: missing primary key, redundant or duplicate indexes, AUTO_INCREMENT headroom, non-transactional engines.
+- **Table insights** — columns, indexes with per-prefix cardinality and visibility, foreign keys in both directions, partitions with bounds and sizes, row and size estimates, free space, DDL, the data — 200 rows a page, a `WHERE` filter, sorted by the server when you click a column, forward and back by key so deep pages stay fast — and findings: missing primary key, redundant or duplicate indexes, AUTO_INCREMENT headroom, non-transactional engines.
 - **Processlist** — sessions with filters, auto-refresh and **Kill Query / Kill Connection**, pinned to the server that produced the list (also behind load balancers and ProxySQL).
 - **InnoDB locks** — running transactions, lock waits with the waiting and the blocking statement (`performance_schema.data_locks` on MySQL 8, `information_schema.innodb_lock_waits` elsewhere), the latest detected deadlock, and a one-click "kill blocker".
 - **Top statements** — `performance_schema` statement digests ranked by total or average time, executions, rows examined, full scans or errors.
@@ -94,6 +94,10 @@ TLS is negotiated on the same socket after the server greeting (`SSLRequest`), l
 | ![Chart](docs/screenshots/chart-mariadb114.png) | ![Connection](docs/screenshots/connection-tls.png) |
 | **Knowledge base: relationships with their evidence and confidence** | **Knowledge base: a subject area as a Mermaid ER diagram** |
 | ![Knowledge base relationships](docs/screenshots/knowledge-relationships-mysql84.png) | ![Knowledge base diagram](docs/screenshots/knowledge-diagram-mysql84.png) |
+
+**Table data: a `WHERE` filter, sorted by `amount` on the server, page 2**
+
+<img src="docs/screenshots/table-data-mysql84.png" alt="The Data tab of shop.orders filtered to web orders over 100, sorted by amount descending, showing rows 201–400" width="900">
 
 ## Installation
 

@@ -44,7 +44,7 @@ AI 助手面对同样的问题，掌握的上下文却更少：每个会话都�
 ## 功能
 
 - **库表浏览**：按存储引擎（InnoDB、MyISAM、MEMORY…）分组的表，以及视图、序列、存储过程、函数、触发器、事件，各有专属图标；系统库默认隐藏。
-- **表洞察**：列、带每个前缀基数和可见性的索引、双向外键、带边界和大小的分区、行数与空间估算、碎片空间、DDL、数据预览，以及诊断结论：缺少主键、冗余或重复索引、AUTO_INCREMENT 余量、非事务引擎。
+- **表洞察**：列、带每个前缀基数和可见性的索引、双向外键、带边界和大小的分区、行数与空间估算、碎片空间、DDL、表数据（每页 200 行，支持 `WHERE` 过滤，点击列头由服务器排序，按键值前后翻页，深页也很快），以及诊断结论：缺少主键、冗余或重复索引、AUTO_INCREMENT 余量、非事务引擎。
 - **会话列表（Processlist）**：过滤、自动刷新、**终止查询 / 终止连接**；终止操作固定到产生该列表的那台服务器（负载均衡与 ProxySQL 之后同样准确）。
 - **InnoDB 锁**：运行中的事务、锁等待（等待方与阻塞方的语句；MySQL 8 使用 `performance_schema.data_locks`，其他版本使用 `information_schema.innodb_lock_waits`）、最近一次死锁，以及一键"终止阻塞者"。
 - **Top 语句**：按总耗时、平均耗时、执行次数、扫描行数、全表扫描或错误数排序的 `performance_schema` 语句摘要。
@@ -94,6 +94,10 @@ TLS 与 `mysql` 客户端一样，在服务器握手包之后通过 `SSLRequest`
 | ![Chart](docs/screenshots/chart-mariadb114.png) | ![Connection](docs/screenshots/connection-tls.png) |
 | **知识库：关系及其证据与置信度** | **知识库：主题域的 Mermaid ER 图** |
 | ![Knowledge base relationships](docs/screenshots/knowledge-relationships-mysql84.png) | ![Knowledge base diagram](docs/screenshots/knowledge-diagram-mysql84.png) |
+
+**表数据：`WHERE` 过滤、由服务器按 `amount` 排序、第 2 页**
+
+<img src="docs/screenshots/table-data-mysql84.png" alt="shop.orders 的数据页：过滤出金额大于 100 的 web 订单，按金额降序，显示第 201–400 行" width="900">
 
 ## 安装
 

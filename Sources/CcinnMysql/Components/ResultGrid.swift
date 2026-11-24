@@ -17,6 +17,8 @@ struct InspectedValue: Identifiable {
 /// A cell the user wants to change (row is the index into the result's rows, independent of sorting).
 struct CellEditRequest: Identifiable, Equatable {
     let id = UUID()
+    /// The result the cell belongs to: an edit is refused once another result (page) replaced it.
+    var resultID = UUID()
     let row: Int
     let column: Int
     let columnName: String
@@ -32,6 +34,23 @@ struct ResultGrid: NSViewRepresentable {
     /// Result columns that may be edited (design D11); double-click edits instead of inspecting.
     var editableColumns: Set<Int> = []
     var onEdit: ((CellEditRequest) -> Void)?
+    /// Set when the owner sorts on the server (the Data tab): header clicks ask it, and the rows stay as it sent them.
+    var serverSort: ServerSort?
+    /// Row numbers start after this many rows (the page's first row is `rowNumberOffset + 1`).
+    var rowNumberOffset = 0
+
+    /// A header click: sort by the result column, or (`nil`) back to the server's own order.
+    struct SortRequest: Equatable {
+        let column: Int
+        let ascending: Bool
+    }
+
+    struct ServerSort {
+        /// The column the rows are sorted by, shown as the header arrow.
+        var column: Int?
+        var ascending: Bool
+        var onChange: (SortRequest?) -> Void
+    }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -80,6 +99,8 @@ struct ResultGrid: NSViewRepresentable {
         weak var tableView: NSTableView?
         private var order: [Int]?
         private var sortTask: Task<Void, Never>?
+        /// The grid is setting the header arrow itself; not a click.
+        private var isShowingServerSort = false
         private static let rowNumberID = NSUserInterfaceItemIdentifier("#")
         private static let cellFont = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .regular)
         private static let nullFont = NSFontManager.shared.convert(NSFont.monospacedSystemFont(ofSize: 11, weight: .regular), toHaveTrait: .italicFontMask)
@@ -92,12 +113,14 @@ struct ResultGrid: NSViewRepresentable {
             guard let tableView else { return }
             sortTask?.cancel()
             order = nil
+            isShowingServerSort = true
             tableView.sortDescriptors = []
+            isShowingServerSort = false
             for column in tableView.tableColumns { tableView.removeTableColumn(column) }
 
             let numberColumn = NSTableColumn(identifier: Self.rowNumberID)
             numberColumn.title = "#"
-            numberColumn.width = max(36, CGFloat(String(grid.rows.count).count) * 8 + 14)
+            numberColumn.width = max(36, CGFloat(String(grid.rowNumberOffset + grid.rows.count).count) * 8 + 14)
             numberColumn.minWidth = 30
             numberColumn.resizingMask = []
             tableView.addTableColumn(numberColumn)
@@ -112,6 +135,11 @@ struct ResultGrid: NSViewRepresentable {
                 column.sortDescriptorPrototype = NSSortDescriptor(key: String(index), ascending: true)
                 if definition.type.isNumeric { column.headerCell.alignment = .right }
                 tableView.addTableColumn(column)
+            }
+            if let sort = grid.serverSort, let column = sort.column, grid.columns.indices.contains(column) {
+                isShowingServerSort = true
+                tableView.sortDescriptors = [NSSortDescriptor(key: String(column), ascending: sort.ascending)]
+                isShowingServerSort = false
             }
             tableView.reloadData()
             tableView.scrollRowToVisible(0)
@@ -140,7 +168,7 @@ struct ResultGrid: NSViewRepresentable {
             }
         }
 
-        private func rowIndex(_ displayRow: Int) -> Int {
+        func rowIndex(_ displayRow: Int) -> Int {
             guard let order else { return displayRow }
             return order.indices.contains(displayRow) ? order[displayRow] : displayRow
         }
@@ -171,7 +199,7 @@ struct ResultGrid: NSViewRepresentable {
             }
             guard let field = cell.textField else { return cell }
             if tableColumn.identifier == Self.rowNumberID {
-                field.stringValue = String(row + 1)
+                field.stringValue = String(parent.rowNumberOffset + row + 1)
                 field.font = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
                 field.textColor = .tertiaryLabelColor
                 field.alignment = .right
@@ -206,6 +234,10 @@ struct ResultGrid: NSViewRepresentable {
         // MARK: Sorting
 
         func tableView(_ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
+            guard !isShowingServerSort else { return }
+            if let serverSort = parent.serverSort {
+                return requestServerSort(serverSort, tableView: tableView, previous: oldDescriptors.first)
+            }
             guard let descriptor = tableView.sortDescriptors.first, let key = descriptor.key, let column = Int(key),
                   parent.columns.indices.contains(column) else {
                 order = nil
@@ -224,6 +256,21 @@ struct ResultGrid: NSViewRepresentable {
                 self.order = sorted
                 self.tableView?.reloadData()
             }
+        }
+
+        /// Ascending, descending, then (a third click on the same header) the server's own order.
+        private func requestServerSort(_ serverSort: ServerSort, tableView: NSTableView, previous: NSSortDescriptor?) {
+            guard let descriptor = tableView.sortDescriptors.first, let key = descriptor.key, let column = Int(key),
+                  parent.columns.indices.contains(column) else {
+                return serverSort.onChange(nil)
+            }
+            if previous?.key == key, previous?.ascending == false, descriptor.ascending {
+                isShowingServerSort = true
+                tableView.sortDescriptors = []
+                isShowingServerSort = false
+                return serverSort.onChange(nil)
+            }
+            serverSort.onChange(SortRequest(column: column, ascending: descriptor.ascending))
         }
 
         nonisolated static func sortedOrder(rows: [[String?]], column: Int, numeric: Bool, ascending: Bool) -> [Int] {
@@ -259,13 +306,14 @@ struct ResultGrid: NSViewRepresentable {
             }
         }
 
-        private func editRequest(row: Int, column tableColumnIndex: Int) -> CellEditRequest? {
+        func editRequest(row: Int, column tableColumnIndex: Int) -> CellEditRequest? {
             guard parent.onEdit != nil, let tableView, parent.rows.indices.contains(row), tableView.tableColumns.indices.contains(tableColumnIndex),
                   let column = Int(tableView.tableColumns[tableColumnIndex].identifier.rawValue), parent.editableColumns.contains(column),
                   parent.columns.indices.contains(column) else { return nil }
             let dataRow = rowIndex(row)
             let values = parent.rows[dataRow]
-            return CellEditRequest(row: dataRow, column: column, columnName: parent.columns[column].name, value: column < values.count ? values[column] : nil)
+            return CellEditRequest(resultID: parent.resultID, row: dataRow, column: column, columnName: parent.columns[column].name,
+                                   value: column < values.count ? values[column] : nil)
         }
 
         private func requestEdit(row: Int, column: Int) {

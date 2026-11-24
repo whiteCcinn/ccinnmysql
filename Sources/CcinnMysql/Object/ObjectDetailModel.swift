@@ -59,6 +59,18 @@ final class ObjectDetailModel {
     var ddl: Loadable<String> = .idle
     var preview: Loadable<ResultSet> = .idle
     var previewID = UUID()
+    /// The Data tab's position: sort, page, and whether pages are read by key.
+    private(set) var pager: TablePager?
+    /// A page is being read; the page on screen stays until it arrives.
+    private(set) var isLoadingPage = false
+    /// The Data tab's filter on the page on screen; why the last one entered was refused (by the check or the server).
+    private(set) var dataFilter: TableFilter?
+    private(set) var filterProblem: String?
+    /// The table's identifying keys (primary key first) and, without one, the columns that break ties; read once.
+    private var identifyingKeys: [[String]]?
+    private var tieBreakers: [String] = []
+    private var pageLoad: UInt64 = 0
+    private var pageTask: Task<Void, Never>?
     /// Whether the preview rows can be edited, and how.
     var editEligibility: RowEditEligibility?
     var pendingEdit: PendingRowEdit?
@@ -103,6 +115,10 @@ final class ObjectDetailModel {
         ddl = .idle
         preview = .idle
         editEligibility = nil
+        pager = nil
+        identifyingKeys = nil
+        tieBreakers = []
+        pageTask?.cancel()
         if let refreshed = workspace.object(database: object.schema, name: object.name), refreshed.kind == object.kind { object = refreshed }
         load(section)
     }
@@ -153,30 +169,117 @@ final class ObjectDetailModel {
         run({ self.ddl = $0 }) { try await self.client.ddl(of: object) }
     }
 
+    /// The first page, in the current sort (first load, Try Again).
     func loadPreview() {
+        let sort = pager?.sort
+        loadPage(replacing: true) { $0.first(sortedBy: sort) }
+    }
+
+    /// The page on screen again.
+    func reloadPage() { loadPage { $0.reload() } }
+    func nextPage() { loadPage { $0.next() } }
+    func previousPage() { loadPage { $0.previous() } }
+    func firstPage() { loadPage { $0.first(sortedBy: $0.sort) } }
+
+    /// Sorts on the server by `column` (`nil`: the table's order) and shows the first page.
+    func sortPreview(by sort: TablePager.Sort?) { loadPage { $0.first(sortedBy: sort) } }
+
+    /// Shows the first page of the rows matching `text` (empty: every row), in the current sort. The filter takes
+    /// effect when its page arrives; a refused or failing one leaves the page on screen and says why.
+    func applyFilter(_ text: String) {
+        switch TableFilter.parse(text) {
+        case let .failure(refusal):
+            filterProblem = refusal.message
+        case let .success(filter):
+            filterProblem = nil
+            let sort = pager?.sort
+            loadPage(filter: .some(filter)) { $0.first(sortedBy: sort) }
+        }
+    }
+
+    /// Reads the page `choose` picks. The page on screen stays until the new one arrives (`replacing` shows progress
+    /// instead); only the newest request may show its page.
+    /// `filter`: start over with this filter (`.some(nil)`: none) instead of the page on screen's.
+    private func loadPage(replacing: Bool = false, filter: TableFilter?? = nil, _ choose: @escaping (TablePager) -> TablePager.Request?) {
         let object = object
         let token = generation
-        run({ [weak self] state in
-            self?.preview = state
-            self?.previewID = UUID()
-        }) {
-            let result = try await self.client.preview(object, limit: 200)
-            if object.kind == .table {
-                let keys = (try? await self.client.identifyingKeys(schema: object.schema, table: object.name)) ?? []
-                if token == self.generation {
-                    self.editEligibility = RowEditor.eligibility(columns: result.columns, keys: keys, isBaseTable: true)
-                }
-            } else {
-                self.editEligibility = .readOnly("Only base tables can be edited.")
-            }
-            return result
+        pageLoad &+= 1
+        let load = pageLoad
+        if replacing || preview.value == nil {
+            preview = .loading
+            previewID = UUID()
         }
+        isLoadingPage = true
+        // A superseded read (a second click, a new sort) is cancelled: the server stops its statement.
+        pageTask?.cancel()
+        pageTask = Task {
+            defer { if load == self.pageLoad { self.isLoadingPage = false } }
+            do {
+                let keys = try await self.keys(of: object)
+                let fresh = { (filter: TableFilter?) in
+                    TablePager(table: object.qualifiedName, keyColumns: keys.first ?? [], tieBreakers: self.tieBreakers, filter: filter)
+                }
+                var pager = filter.map(fresh) ?? self.pager ?? fresh(self.dataFilter)
+                guard let request = choose(pager) else { return }
+                let result = try await self.client.previewPage(request.sql, maxRows: pager.pageSize + 1)
+                guard token == self.generation, load == self.pageLoad else { return }
+                let rows = pager.apply(request, columns: result.columns, rows: result.rows, truncated: result.isTruncated)
+                self.pager = pager
+                self.dataFilter = pager.filter
+                if filter != nil { self.filterProblem = nil }
+                // Everything before the page went away meanwhile: show the start of the table.
+                if rows.isEmpty, request.readsBackward { return self.firstPage() }
+                self.editEligibility = object.kind == .table
+                    ? RowEditor.eligibility(columns: result.columns, keys: keys, isBaseTable: true)
+                    : .readOnly("Only base tables can be edited.")
+                self.preview = .loaded(ResultSet(columns: result.columns, rows: rows, isTruncated: result.isTruncated,
+                                                 warnings: result.warnings, status: result.status))
+                self.previewID = UUID()
+            } catch is CancellationError {
+                return
+            } catch {
+                guard token == self.generation, load == self.pageLoad else { return }
+                if filter != nil {
+                    self.filterProblem = describe(error)
+                    if self.preview.value != nil { return }
+                }
+                if self.preview.value == nil {
+                    self.preview = .failed(describe(error))
+                } else {
+                    self.workspace.showToast(describe(error), isError: true)
+                }
+            }
+        }
+    }
+
+    /// Primary key first, then NOT NULL unique keys; none for views. Without a key, the columns that can break ties
+    /// in a sort (not TEXT, BLOB, JSON or spatial) are read too.
+    private func keys(of object: DatabaseObject) async throws -> [[String]] {
+        if let identifyingKeys { return identifyingKeys }
+        let keys = object.kind == .table ? ((try? await client.identifyingKeys(schema: object.schema, table: object.name)) ?? []) : []
+        if keys.isEmpty, let columns = try? await client.columns(schema: object.schema, table: object.name) {
+            tieBreakers = columns.filter { TablePager.breaksTies(dataType: $0.dataType) }.map(\.name)
+        }
+        identifyingKeys = keys
+        return keys
+    }
+
+    /// The Data tab's page as a query in the editor.
+    func openPageInEditor() {
+        let sql = (pager ?? TablePager(table: object.qualifiedName, keyColumns: identifyingKeys?.first ?? [])).editorSQL
+        workspace.openSQL(text: sql + ";", database: object.schema, run: true)
     }
 
     // MARK: Editing
 
     /// Prepares an UPDATE for one changed cell and asks for confirmation.
-    func proposeEdit(row: Int, column: Int, newValue: String?) {
+    func proposeEdit(_ request: CellEditRequest, newValue: String?) {
+        // The page changed while the editor was open: the row index now names another row.
+        guard request.resultID == previewID else {
+            return workspace.showToast("The page changed while you edited. Double-click the cell again.", isError: true)
+        }
+        let row = request.row
+        let column = request.column
         guard let plan = editEligibility?.plan, let result = preview.value, result.rows.indices.contains(row) else { return }
         let original = result.rows[row]
         guard column < original.count, original[column] != newValue else { return }
@@ -196,8 +299,7 @@ final class ObjectDetailModel {
             do {
                 try await client.applyRowEdit(edit.sql)
                 workspace.showToast("Row updated")
-                generation &+= 1
-                loadPreview()
+                reloadPage()
             } catch {
                 workspace.showToast(describe(error), isError: true)
             }

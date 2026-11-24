@@ -382,8 +382,14 @@ extension MySQLClient {
     /// First rows of a table or view (bounded).
     public func preview(_ object: DatabaseObject, limit: Int = 200) async throws -> ResultSet {
         let rows = max(1, min(limit, 10_000))
-        let results = try await query("SELECT * FROM \(object.qualifiedName) LIMIT \(rows)", limits: RowLimits(maxRows: rows, maxBytes: 64 * 1024 * 1024, drainRows: 0),
-                                      timeout: Self.metadataTimeout)
+        return try await previewPage("SELECT * FROM \(object.qualifiedName) LIMIT \(rows)", maxRows: rows)
+    }
+
+    /// One page of a table's data (a query the app built, such as `TablePager`'s), bounded like `preview`.
+    /// Reading stops at `maxBytes` (the result is then `isTruncated`).
+    public func previewPage(_ sql: String, maxRows: Int, maxBytes: Int = 64 * 1024 * 1024) async throws -> ResultSet {
+        let rows = max(1, min(maxRows, 10_001))
+        let results = try await query(sql, limits: RowLimits(maxRows: rows, maxBytes: max(1, maxBytes), drainRows: 0), timeout: Self.metadataTimeout)
         guard let last = results.last else { throw MySQLError(.protocolViolation, "The server returned no result") }
         return last
     }

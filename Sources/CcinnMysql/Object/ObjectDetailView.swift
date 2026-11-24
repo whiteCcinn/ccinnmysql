@@ -27,7 +27,7 @@ struct ObjectDetailView: View {
         }
         .sheet(item: $model.inspected) { ValueInspectorView(value: $0) }
         .sheet(item: $editing) { request in
-            CellEditorSheet(request: request) { newValue in model.proposeEdit(row: request.row, column: request.column, newValue: newValue) }
+            CellEditorSheet(request: request) { newValue in model.proposeEdit(request, newValue: newValue) }
         }
         .sheet(item: $model.pendingEdit) { edit in
             ConfirmStatementSheet(title: "Save this change?", message: "CcinnMysql runs the statement in a transaction and commits only if exactly one row matches.",
@@ -487,12 +487,15 @@ private struct DDLSection: View {
 private struct DataSection: View {
     let model: ObjectDetailModel
     @Binding var editing: CellEditRequest?
+    @State private var filterText = ""
 
     var body: some View {
         LoadableView(state: model.preview, retry: model.loadPreview) { result in
             VStack(spacing: 0) {
+                filterBar
+                Divider()
                 HStack(spacing: 10) {
-                    Text("First \(Format.count(result.rows.count)) rows").font(.callout.weight(.semibold))
+                    Text(position(result)).font(.callout.weight(.semibold)).monospacedDigit()
                     switch model.editEligibility {
                     case .editable?:
                         Label("Double-click a cell to edit", systemImage: "pencil").font(.caption).foregroundStyle(.secondary)
@@ -502,16 +505,20 @@ private struct DataSection: View {
                         EmptyView()
                     }
                     Spacer()
+                    if model.isLoadingPage { ProgressView().controlSize(.small) }
+                    pageButtons
+                    Divider().frame(height: 16)
                     Button {
-                        model.loadPreview()
+                        model.reloadPage()
                     } label: {
                         Label("Reload", systemImage: "arrow.clockwise")
                     }
                     Button {
-                        model.openQuery()
+                        model.openPageInEditor()
                     } label: {
                         Label("Open in Editor", systemImage: "square.and.pencil")
                     }
+                    .help("Open this page's query in a SQL tab")
                 }
                 .buttonStyle(.borderless)
                 .padding(.horizontal, 14)
@@ -520,8 +527,91 @@ private struct DataSection: View {
                 let plan = model.editEligibility?.plan
                 ResultGrid(resultID: model.previewID, columns: result.columns, rows: result.rows,
                            insertTableName: model.object.qualifiedName, onInspect: { model.inspected = $0 },
-                           editableColumns: plan?.editableColumns ?? [], onEdit: plan == nil ? nil : { editing = $0 })
+                           editableColumns: plan?.editableColumns ?? [], onEdit: plan == nil ? nil : { editing = $0 },
+                           serverSort: serverSort(result), rowNumberOffset: (model.pager?.firstRow ?? 1) - 1)
             }
+        }
+    }
+
+    /// `WHERE` and a condition; Return applies it, the clear button removes it.
+    private var filterBar: some View {
+        HStack(spacing: 8) {
+            Text("WHERE").font(.system(size: 11, weight: .semibold, design: .monospaced)).foregroundStyle(.secondary)
+            TextField("geo = 'US' AND total > 10", text: $filterText)
+                .textFieldStyle(.plain)
+                .font(Theme.monospaced)
+                .onSubmit { model.applyFilter(filterText) }
+                .help("A condition on this table's rows. Press Return to apply it.")
+            if let problem = model.filterProblem {
+                Label(problem, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+                    .frame(maxWidth: 420, alignment: .trailing)
+            }
+            if !filterText.isEmpty || model.dataFilter != nil {
+                Button {
+                    filterText = ""
+                    model.applyFilter("")
+                } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("Show every row")
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 5)
+        .background(model.dataFilter == nil ? Color.clear : Theme.accent.opacity(0.06))
+        .onAppear { filterText = model.dataFilter?.condition ?? filterText }
+        // A filter took effect: show it as applied (without a typed WHERE).
+        .onChange(of: model.dataFilter) { _, applied in filterText = applied?.condition ?? "" }
+    }
+
+    private var pageButtons: some View {
+        HStack(spacing: 4) {
+            Button {
+                model.firstPage()
+            } label: {
+                Image(systemName: "chevron.left.to.line")
+            }
+            .help("First page")
+            .disabled(!(model.pager?.hasPrevious ?? false))
+            Button {
+                model.previousPage()
+            } label: {
+                Image(systemName: "chevron.left")
+            }
+            .help("Previous \(model.pager?.pageSize ?? 200) rows")
+            .disabled(!(model.pager?.hasPrevious ?? false))
+            Button {
+                model.nextPage()
+            } label: {
+                Image(systemName: "chevron.right")
+            }
+            .help("Next \(model.pager?.pageSize ?? 200) rows")
+            .disabled(!(model.pager?.hasNext ?? false))
+        }
+        .disabled(model.isLoadingPage)
+    }
+
+    private func position(_ result: ResultSet) -> String {
+        guard let pager = model.pager else { return "\(Format.count(result.rows.count)) rows" }
+        if pager.filter != nil, result.rows.isEmpty { return "No rows match the filter" }
+        // The table's row estimate says nothing about how many rows match a filter.
+        let estimate = model.object.kind == .table && pager.filter == nil ? model.object.rowCount : nil
+        return pager.position(rowsOnPage: result.rows.count, estimatedTotal: estimate)
+    }
+
+    /// Header clicks sort on the server; the arrow shows the server's sort.
+    private func serverSort(_ result: ResultSet) -> ResultGrid.ServerSort {
+        let sort = model.pager?.sort
+        let column = sort.flatMap { sort in result.columns.firstIndex { $0.name.caseInsensitiveCompare(sort.column) == .orderedSame } }
+        return ResultGrid.ServerSort(column: column, ascending: sort?.ascending ?? true) { request in
+            model.sortPreview(by: request.flatMap { request in
+                result.columns.indices.contains(request.column)
+                    ? TablePager.Sort(column: result.columns[request.column].name, ascending: request.ascending) : nil
+            })
         }
     }
 }
