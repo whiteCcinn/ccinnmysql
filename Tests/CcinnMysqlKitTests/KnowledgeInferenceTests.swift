@@ -90,8 +90,8 @@ struct KnowledgeInferenceNamingTests {
         let cases: [(table: String, entities: [String])] = [
             ("dsp", ["dsp"]),
             ("dim_dsp", ["dsp"]),
-            ("report_adx_hour", ["report_adx", "adx"]),
-            ("report_adx_utce8", ["report_adx", "adx"]),
+            ("report_crm_hour", ["report_crm", "crm"]),
+            ("report_crm_utce8", ["report_crm", "crm"]),
             ("ods_app_info_daily", ["app"]),
             ("t_user_v2", ["user"]),
             ("DimCampaigns", ["campaigns", "campaign"]),
@@ -111,19 +111,19 @@ struct KnowledgeInferenceNamingTests {
     }
 
     @Test func aReportColumnPointsAtItsDimensionTable() throws {
-        let report = F.table("report_adx_hour", model: "AGG", [
+        let report = F.table("report_crm_hour", model: "AGG", [
             F.column("dt", "date", key: true), F.column("hour", "tinyint", key: true),
             F.column("dsp_id", "bigint", key: true, comment: "DSP id"), F.column("dsp_request", "bigint"),
         ])
         let dsp = F.table("dsp", model: "PK", primary: ["id"], [F.column("id", "bigint", key: true), F.column("name", "varchar(64)")])
         let relationships = NamingHeuristics.relationships(tables: [report, dsp], now: F.now)
-        #expect(relationships.map(F.describe) == ["report_adx_hour(dsp_id)->dsp(id)"])
+        #expect(relationships.map(F.describe) == ["report_crm_hour(dsp_id)->dsp(id)"])
         let relationship = try #require(relationships.first)
         #expect(relationship.kind == .manyToOne)
         #expect(relationship.status == .inferred)
         #expect(relationship.id == Relationship.id(from: relationship.from, to: relationship.to))
         #expect(relationship.evidence == [Evidence(source: .naming, score: 70, at: F.now)])
-        #expect(relationship.fingerprints == ["report_adx_hour": "fp-report_adx_hour", "dsp": "fp-dsp"])
+        #expect(relationship.fingerprints == ["report_crm_hour": "fp-report_crm_hour", "dsp": "fp-dsp"])
     }
 
     // Types unknown and no keys: only the kind of match, the target column and the target's kind count.
@@ -237,8 +237,8 @@ struct KnowledgeInferenceNamingTests {
 
     @Test func outputIsDeterministic() {
         let tables = [
-            F.table("report_adx_hour", [F.column("dsp_id"), F.column("app_id"), F.column("publisher_id")]),
-            F.table("report_adx_day", [F.column("app_id"), F.column("publisher_id")]),
+            F.table("report_crm_hour", [F.column("dsp_id"), F.column("app_id"), F.column("publisher_id")]),
+            F.table("report_crm_day", [F.column("app_id"), F.column("publisher_id")]),
             F.table("dsp", [F.column("id")]), F.table("dim_app", [F.column("id")]),
         ]
         let forward = NamingHeuristics.relationships(tables: tables, now: F.now)

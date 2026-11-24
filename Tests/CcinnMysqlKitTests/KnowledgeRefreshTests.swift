@@ -5,10 +5,10 @@ import Testing
 
 private let now = Date(timeIntervalSince1970: 1_800_000_000)
 private let later = Date(timeIntervalSince1970: 1_800_086_400)
-private let key = DatabaseKey(cluster: ClusterKey(rawValue: "my://db:3306"), catalog: "def", database: "adx")
+private let key = DatabaseKey(cluster: ClusterKey(rawValue: "my://db:3306"), catalog: "def", database: "crm")
 
 private func object(_ name: String, _ kind: ObjectKind = .table, comment: String? = nil) -> DatabaseObject {
-    var object = DatabaseObject(schema: "adx", name: name, kind: kind)
+    var object = DatabaseObject(schema: "crm", name: name, kind: kind)
     object.comment = comment
     return object
 }
@@ -23,15 +23,15 @@ private func primaryKey(_ columns: String...) -> IndexInfo {
 
 private func rows(dspIDType: String = "bigint", reportComment: String = "hourly report", viewDefinition: String? = nil,
                   extra: [(DatabaseObject, [ColumnInfo], [IndexInfo])] = [], dropping: Set<String> = []) -> KnowledgeSchemaRows {
-    var objects = [object("report_adx_hour", comment: reportComment), object("dsp"), object("v_dsp_report", .view)]
+    var objects = [object("report_crm_hour", comment: reportComment), object("dsp"), object("v_dsp_report", .view)]
     var columns: [String: [ColumnInfo]] = [
-        "report_adx_hour": [column("hour", 2, "tinyint", nullable: false), column("dt", 1, "date", nullable: false),
+        "report_crm_hour": [column("hour", 2, "tinyint", nullable: false), column("dt", 1, "date", nullable: false),
                             column("dsp_id", 3, dspIDType, nullable: false, comment: "DSP"), column("dsp_request", 4, "bigint")],
         "dsp": [column("id", 1, "bigint", nullable: false), column("name", 2, "varchar(64)")],
         "v_dsp_report": [column("dt", 1, "date"), column("dsp_name", 2, "varchar(64)")],
     ]
-    var indexes: [String: [IndexInfo]] = ["report_adx_hour": [primaryKey("dt", "hour", "dsp_id")], "dsp": [primaryKey("id")]]
-    let definition = viewDefinition ?? "select `r`.`dt` AS `dt`,`d`.`name` AS `dsp_name` from (`adx`.`report_adx_hour` `r` join `adx`.`dsp` `d` "
+    var indexes: [String: [IndexInfo]] = ["report_crm_hour": [primaryKey("dt", "hour", "dsp_id")], "dsp": [primaryKey("id")]]
+    let definition = viewDefinition ?? "select `r`.`dt` AS `dt`,`d`.`name` AS `dsp_name` from (`crm`.`report_crm_hour` `r` join `crm`.`dsp` `d` "
         + "on((`r`.`dsp_id` = `d`.`id`))) where (`r`.`dt` > '2026-01-01')"
     for (extraObject, extraColumns, extraIndexes) in extra {
         objects.append(extraObject)
@@ -45,7 +45,7 @@ private func rows(dspIDType: String = "bigint", reportComment: String = "hourly 
 
 private func schema(dspIDType: String = "bigint", reportComment: String = "hourly report", viewDefinition: String? = nil,
                     extra: [(DatabaseObject, [ColumnInfo], [IndexInfo])] = [], dropping: Set<String> = []) -> ExtractedSchema {
-    KnowledgeExtractor.build(database: "adx", rows: rows(dspIDType: dspIDType, reportComment: reportComment, viewDefinition: viewDefinition, extra: extra,
+    KnowledgeExtractor.build(database: "crm", rows: rows(dspIDType: dspIDType, reportComment: reportComment, viewDefinition: viewDefinition, extra: extra,
                                                      dropping: dropping),
                              serverVersion: "MySQL 8.4.3", serverIdentifier: nil)
 }
@@ -54,11 +54,11 @@ private func schema(dspIDType: String = "bigint", reportComment: String = "hourl
 struct SchemaFingerprintTests {
     private func facts(_ schema: ExtractedSchema, _ name: String) throws -> TableFacts {
         let table = try #require(schema.tables.first { $0.name == name })
-        return KnowledgeRefresher.tableFacts(table, database: "adx", previous: nil, now: now)
+        return KnowledgeRefresher.tableFacts(table, database: "crm", previous: nil, now: now)
     }
 
     @Test func factsFollowTheServerInOrdinalOrder() throws {
-        let report = try facts(schema(), "report_adx_hour")
+        let report = try facts(schema(), "report_crm_hour")
         #expect(report.columns.map(\.name) == ["dt", "hour", "dsp_id", "dsp_request"])
         #expect(report.kind == .table && report.model == nil)
         #expect(report.keys.primary == ["dt", "hour", "dsp_id"])
@@ -67,24 +67,24 @@ struct SchemaFingerprintTests {
         #expect(report.state == .new && report.firstSeen == now)
         let view = try facts(schema(), "v_dsp_report")
         #expect(view.kind == .view)
-        #expect(view.lineage == [TableReference(table: "dsp"), TableReference(table: "report_adx_hour")], "the view's own database is bare")
+        #expect(view.lineage == [TableReference(table: "dsp"), TableReference(table: "report_crm_hour")], "the view's own database is bare")
     }
 
     @Test func commentsDoNotChangeTheStructureFingerprint() throws {
-        let original = try facts(schema(), "report_adx_hour")
-        let recommented = try facts(schema(reportComment: "per hour"), "report_adx_hour")
+        let original = try facts(schema(), "report_crm_hour")
+        let recommented = try facts(schema(reportComment: "per hour"), "report_crm_hour")
         #expect(original.fingerprint == recommented.fingerprint)
         #expect(original.commentFingerprint != recommented.commentFingerprint)
-        let retyped = try facts(schema(dspIDType: "varchar(32)"), "report_adx_hour")
+        let retyped = try facts(schema(dspIDType: "varchar(32)"), "report_crm_hour")
         #expect(original.fingerprint != retyped.fingerprint)
     }
 
     @Test func literalOnlyChangesInAViewDefinitionKeepTheFingerprint() throws {
         let original = try facts(schema(), "v_dsp_report")
-        let otherDate = try facts(schema(viewDefinition: "select `r`.`dt` AS `dt`,`d`.`name` AS `dsp_name` from (`adx`.`report_adx_hour` `r` join `adx`.`dsp` `d` "
+        let otherDate = try facts(schema(viewDefinition: "select `r`.`dt` AS `dt`,`d`.`name` AS `dsp_name` from (`crm`.`report_crm_hour` `r` join `crm`.`dsp` `d` "
                                          + "on((`r`.`dsp_id` = `d`.`id`))) where (`r`.`dt` > '2026-06-01')"), "v_dsp_report")
         #expect(original.fingerprint == otherDate.fingerprint)
-        let otherJoin = try facts(schema(viewDefinition: "SELECT r.dt, d.name AS dsp_name FROM report_adx_hour r JOIN dsp d ON r.hour = d.id"), "v_dsp_report")
+        let otherJoin = try facts(schema(viewDefinition: "SELECT r.dt, d.name AS dsp_name FROM report_crm_hour r JOIN dsp d ON r.hour = d.id"), "v_dsp_report")
         #expect(original.fingerprint != otherJoin.fingerprint)
     }
 }
@@ -104,8 +104,8 @@ struct KnowledgeRefreshTests {
     @Test func tableStatesAcrossRefreshes() {
         let renamed = (object("dsp_v2"), [column("id", 1, "bigint", nullable: false), column("name", 2, "varchar(64)")], [primaryKey("id")])
         let (knowledge, report) = refreshed([schema(), schema(dspIDType: "varchar(32)", extra: [renamed], dropping: ["dsp"])])
-        #expect(knowledge.table(named: "report_adx_hour")?.state == .changed)
-        #expect(knowledge.table(named: "report_adx_hour")?.changedAt == later)
+        #expect(knowledge.table(named: "report_crm_hour")?.state == .changed)
+        #expect(knowledge.table(named: "report_crm_hour")?.changedAt == later)
         #expect(knowledge.table(named: "dsp")?.state == .dropped, "kept until the user prunes it")
         #expect(knowledge.table(named: "dsp_v2")?.state == .new)
         #expect(knowledge.table(named: "v_dsp_report")?.state == .fresh)
@@ -117,16 +117,16 @@ struct KnowledgeRefreshTests {
     @Test func lineageBecomesRelationshipsThatNeverJoin() {
         let (knowledge, _) = refreshed([schema()])
         let lineage = knowledge.relationships.filter { $0.kind == .lineage }
-        #expect(Set(lineage.map(\.to.table)) == ["dsp", "report_adx_hour"])
+        #expect(Set(lineage.map(\.to.table)) == ["dsp", "report_crm_hour"])
         #expect(lineage.allSatisfy { $0.from.table == "v_dsp_report" && $0.evidence.map(\.source) == [.lineage] })
     }
 
     // Machine evidence is recomputed on every refresh; what the user and the AI added stays.
     @Test func machineEvidenceIsReplacedCuratedEvidenceKept() throws {
-        let from = Relationship.End(table: "report_adx_hour", columns: ["dsp_id"])
+        let from = Relationship.End(table: "report_crm_hour", columns: ["dsp_id"])
         let to = Relationship.End(table: "dsp", columns: ["id"])
         let naming = Relationship(from: from, to: to, kind: .manyToOne, evidence: [Evidence(source: .naming, score: 55, at: now)])
-        let gone = Relationship(from: .init(table: "report_adx_hour", columns: ["hour"]), to: .init(table: "dsp", columns: ["id"]), kind: .manyToOne,
+        let gone = Relationship(from: .init(table: "report_crm_hour", columns: ["hour"]), to: .init(table: "dsp", columns: ["id"]), kind: .manyToOne,
                                 evidence: [Evidence(source: .naming, score: 30, at: now)])
         var (knowledge, _) = refreshed([schema()], machine: [[naming, gone]])
         let id = naming.id
@@ -142,7 +142,7 @@ struct KnowledgeRefreshTests {
     }
 
     @Test func tombstonedRelationshipsAreNotInferredAgain() {
-        let naming = Relationship(from: .init(table: "report_adx_hour", columns: ["dsp_id"]), to: .init(table: "dsp", columns: ["id"]), kind: .manyToOne,
+        let naming = Relationship(from: .init(table: "report_crm_hour", columns: ["dsp_id"]), to: .init(table: "dsp", columns: ["id"]), kind: .manyToOne,
                                   evidence: [Evidence(source: .naming, score: 55, at: now)])
         var knowledge = DatabaseKnowledge(key: key)
         knowledge.tombstones = [Tombstone(id: naming.id, deletedAt: now, by: "user")]
@@ -152,12 +152,12 @@ struct KnowledgeRefreshTests {
 
     @Test func notesAndRelationshipsGoStaleWhenTheirTableChanges() throws {
         var (knowledge, _) = refreshed([schema()])
-        let report = try #require(knowledge.table(named: "report_adx_hour"))
-        knowledge.notes.append(Note(id: "n1", table: "report_adx_hour", column: "dsp_id", kind: .caveat, text: "0 means house ads", evidence: [],
+        let report = try #require(knowledge.table(named: "report_crm_hour"))
+        knowledge.notes.append(Note(id: "n1", table: "report_crm_hour", column: "dsp_id", kind: .caveat, text: "0 means house ads", evidence: [],
                                     by: "ai:codex", at: now, fingerprint: report.fingerprint))
-        let curated = Relationship(from: .init(table: "report_adx_hour", columns: ["dsp_id"]), to: .init(table: "dsp", columns: ["id"]), kind: .manyToOne,
+        let curated = Relationship(from: .init(table: "report_crm_hour", columns: ["dsp_id"]), to: .init(table: "dsp", columns: ["id"]), kind: .manyToOne,
                                    evidence: [Evidence(source: .ai, by: "ai:codex", at: now)],
-                                   fingerprints: ["report_adx_hour": report.fingerprint, "dsp": knowledge.table(named: "dsp")?.fingerprint ?? ""])
+                                   fingerprints: ["report_crm_hour": report.fingerprint, "dsp": knowledge.table(named: "dsp")?.fingerprint ?? ""])
         knowledge.relationships.append(curated)
         #expect(!KnowledgeFreshness.isStale(knowledge.notes[0], in: knowledge))
         #expect(!KnowledgeFreshness.isStale(curated, in: knowledge))
@@ -171,13 +171,13 @@ struct KnowledgeRefreshTests {
 
     @Test func relationshipsToMissingColumnsAreBroken() {
         let (knowledge, _) = refreshed([schema()])
-        let broken = Relationship(from: .init(table: "report_adx_hour", columns: ["app_id"]), to: .init(table: "dsp", columns: ["id"]), kind: .manyToOne,
+        let broken = Relationship(from: .init(table: "report_crm_hour", columns: ["app_id"]), to: .init(table: "dsp", columns: ["id"]), kind: .manyToOne,
                                   evidence: [Evidence(source: .ai, at: now)])
         #expect(KnowledgeFreshness.isBroken(broken, in: knowledge))
-        let fine = Relationship(from: .init(table: "report_adx_hour", columns: ["dsp_id"]), to: .init(table: "dsp", columns: ["id"]), kind: .manyToOne,
+        let fine = Relationship(from: .init(table: "report_crm_hour", columns: ["dsp_id"]), to: .init(table: "dsp", columns: ["id"]), kind: .manyToOne,
                                 evidence: [Evidence(source: .ai, at: now)])
         #expect(!KnowledgeFreshness.isBroken(fine, in: knowledge))
-        let otherDatabase = Relationship(from: .init(table: "report_adx_hour", columns: ["dsp_id"]), to: .init(database: "admin", table: "dsp", columns: ["id"]),
+        let otherDatabase = Relationship(from: .init(table: "report_crm_hour", columns: ["dsp_id"]), to: .init(database: "admin", table: "dsp", columns: ["id"]),
                                          kind: .manyToOne, evidence: [Evidence(source: .ai, at: now)])
         #expect(!KnowledgeFreshness.isBroken(otherDatabase, in: knowledge), "another database's columns are checked against its own knowledge")
     }

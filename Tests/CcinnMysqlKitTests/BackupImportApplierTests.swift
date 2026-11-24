@@ -17,7 +17,7 @@ private func sourceMac() throws -> (BackupTestMac, ConnectionProfile, Connection
     try mac.secrets.setSecret(F.sshSecret, for: SecretKey(profileID: tunnelled.id, kind: .sshSecret))
     try mac.knowledge.updateDatabase(F.databaseKey) { $0.notes = [F.note("n1", text: "revenue in USD", at: 10)] }
     try mac.knowledge.updateIndex { index in
-        index.projects = [F.project("p1", path: "/Users/old/code/adx")]
+        index.projects = [F.project("p1", path: "/Users/old/code/crm")]
         index.links = [KnowledgeIndex.Link(project: "p1", database: F.databaseKey.fileID, addedAt: F.referenceDate, addedBy: "user")]
     }
     try BackupHistoryFiles.write([F.historyEntry("SELECT 1", at: 1)], for: plain.id, in: mac.historyDirectory)
@@ -56,7 +56,7 @@ struct BackupImportApplierTests {
         #expect(try target.secrets.secret(for: SecretKey(profileID: tunnelled.id, kind: .sshSecret)) == F.sshSecret)
         #expect(try target.knowledge.database(F.databaseKey)?.notes.map(\.text) == ["revenue in USD"])
         let index = try target.knowledge.index()
-        #expect(index.projects.map(\.path) == ["~/code/adx"] && index.links.count == 1)
+        #expect(index.projects.map(\.path) == ["~/code/crm"] && index.links.count == 1)
         #expect(try BackupHistoryFiles.read(for: plain.id, in: target.historyDirectory).map(\.sql) == ["SELECT 1"])
         #expect(target.settings == ["autoLimit": .int(5000), "appearance": .string("Dark")])
 

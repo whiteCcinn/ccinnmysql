@@ -12,7 +12,9 @@ struct SQLWorkbenchView: View {
             VSplitView {
                 VStack(spacing: 0) {
                     SQLEditor(text: $model.text, selection: $model.selection, diagnostics: model.diagnostics,
-                              completionProvider: { [model] text, cursor in await model.completions(text: text, cursor: cursor) },
+                              completionProvider: { [model] text, cursor, deliver in
+                                  await model.completions(text: text, cursor: cursor, deliver: deliver)
+                              },
                               onEdit: { [model] edits in model.editorDidEdit(edits) },
                               focusOnAppear: true, controller: model.editorController, lexingMode: model.effectiveLexingMode)
                     DiagnosticsBar(model: model)

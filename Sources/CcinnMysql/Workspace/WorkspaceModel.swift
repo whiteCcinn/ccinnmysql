@@ -65,12 +65,12 @@ final class WorkspaceModel {
     let client: MySQLClient
     let history: QueryHistoryStore
 
-    var schemas: [SchemaInfo] = []
+    var schemas: [SchemaInfo] = [] { didSet { completionSchemaDidChange() } }
     var databases: [String] { schemas.map(\.name) }
     var showSystemSchemas = false
     var isLoadingDatabases = false
     var databasesError: String?
-    var databaseStates: [String: DatabaseState] = [:]
+    var databaseStates: [String: DatabaseState] = [:] { didSet { completionSchemaDidChange() } }
     var expandedDatabases: Set<String> = []
     var sidebarFilter = ""
     var sidebarSelection: String?
@@ -80,8 +80,17 @@ final class WorkspaceModel {
     var toast: Toast?
 
     /// Columns per table for completion and previews.
-    private var columnCache: [TableKey: [ColumnInfo]] = [:]
+    private var columnCache: [TableKey: [ColumnInfo]] = [:] { didSet { completionSchemaDidChange() } }
     private var columnMisses: [TableKey: Date] = [:]
+    /// When each cached column list and object list loaded, and when an object list last failed to.
+    @ObservationIgnored private var columnsLoadedAt: [TableKey: Date] = [:]
+    @ObservationIgnored private var objectsLoadedAt: [String: Date] = [:]
+    @ObservationIgnored private var objectLoadFailures: [String: Date] = [:]
+    @ObservationIgnored private var lastStaleSchemaCheck = Date.distantPast
+    /// The completion schema built from the above, until any of it changes.
+    @ObservationIgnored private var completionSchema: SchemaSnapshot?
+    /// Changes whenever the completion schema does.
+    @ObservationIgnored private(set) var completionSchemaVersion: UInt64 = 0
     private var columnLoads: [String: Task<Void, Never>] = [:]
     private var objectLoads: [String: Task<Void, Never>] = [:]
     private var objectLoadGenerations: [String: UInt64] = [:]
@@ -138,6 +147,8 @@ final class WorkspaceModel {
     func refreshAll() {
         columnCache.removeAll()
         columnMisses.removeAll()
+        columnsLoadedAt.removeAll()
+        objectLoadFailures.removeAll()
         Task { await reloadDatabases() }
     }
 
@@ -164,8 +175,13 @@ final class WorkspaceModel {
                 let objects = try await client.objects(schema: database)
                 guard objectLoadGenerations[database] == generation else { return }
                 databaseStates[database] = .loaded(objects)
+                objectsLoadedAt[database] = Date()
+                objectLoadFailures[database] = nil
             } catch {
                 guard objectLoadGenerations[database] == generation, !Task.isCancelled else { return }
+                objectLoadFailures[database] = Date()
+                // A reload that fails keeps the list already shown.
+                if case .loaded? = databaseStates[database] { return }
                 databaseStates[database] = .failed(describe(error))
             }
         }
@@ -194,28 +210,84 @@ final class WorkspaceModel {
 
     // MARK: Completion schema
 
-    /// Schema for completion from the sidebar's metadata and the column cache.
+    /// Schema for completion from the sidebar's metadata and the column cache; built once per schema change.
     func completionSnapshot(currentDatabase: String?) -> SchemaSnapshot {
-        var objectsByDatabase: [String: [SchemaSnapshot.ObjectEntry]] = [:]
-        for (database, state) in databaseStates {
-            if case let .loaded(objects) = state {
-                objectsByDatabase[database] = objects.objects.map { SchemaSnapshot.ObjectEntry(name: $0.name, kind: $0.kind) }
+        let base: SchemaSnapshot
+        if let cached = completionSchema {
+            base = cached
+        } else {
+            var objectsByDatabase: [String: [SchemaSnapshot.ObjectEntry]] = [:]
+            for (database, state) in databaseStates {
+                if case let .loaded(objects) = state {
+                    objectsByDatabase[database] = objects.objects.map { SchemaSnapshot.ObjectEntry(name: $0.name, kind: $0.kind) }
+                }
             }
+            base = SchemaSnapshot(databases: databases, objectsByDatabase: objectsByDatabase, columnsByTable: columnCache)
+            completionSchema = base
         }
-        return SchemaSnapshot(currentDatabase: currentDatabase, databases: databases, objectsByDatabase: objectsByDatabase, columnsByTable: columnCache)
+        var snapshot = base
+        snapshot.currentDatabase = currentDatabase
+        return snapshot
+    }
+
+    private func completionSchemaDidChange() {
+        completionSchema = nil
+        completionSchemaVersion &+= 1
+    }
+
+    /// The database's name as the server lists it.
+    private func knownDatabase(_ name: String) -> String? {
+        databases.first { $0.caseInsensitiveCompare(name) == .orderedSame }
     }
 
     /// Loads what completion reported as missing: object lists, and columns of the referenced tables.
-    /// Tables that do not exist are remembered for a minute so typing does not re-query them.
+    /// Tables that do not exist, and databases whose list failed to load, are left alone for a minute so typing does
+    /// not re-query them.
     func ensureSchema(columns keys: [TableKey], databases missingDatabases: [String]) async {
-        for database in Set(missingDatabases) where databases.contains(where: { $0.caseInsensitiveCompare(database) == .orderedSame }) {
+        let now = Date()
+        for database in Set(missingDatabases.compactMap(knownDatabase))
+        where SchemaCachePolicy.mayRetry(failedAt: objectLoadFailures[database], now: now) {
             _ = await awaitObjects(database: database)
         }
-        let now = Date()
         let wanted = Set(keys).filter { key in
-            columnCache[key] == nil && (columnMisses[key].map { now.timeIntervalSince($0) > 60 } ?? true)
+            columnCache[key] == nil && SchemaCachePolicy.mayRetry(failedAt: columnMisses[key], now: now)
         }
-        for (database, group) in Dictionary(grouping: wanted, by: \.database) {
+        await loadColumns(wanted, recordingMisses: true)
+    }
+
+    /// Reloads, in the background, the object lists of `databases` and the cached columns that are older than
+    /// `SchemaCachePolicy.maxAge`, so tables created elsewhere appear. Checks at most every 30 seconds.
+    func refreshStaleSchema(databases inUse: [String]) {
+        let now = Date()
+        guard now.timeIntervalSince(lastStaleSchemaCheck) > 30 else { return }
+        lastStaleSchemaCheck = now
+        for database in Set(inUse.compactMap(knownDatabase)) {
+            guard case .loaded? = databaseStates[database], objectLoads[database] == nil,
+                  let loadedAt = objectsLoadedAt[database], SchemaCachePolicy.isStale(loadedAt: loadedAt, now: now) else { continue }
+            loadObjects(database: database, force: true)
+        }
+        let staleColumns = Set(columnsLoadedAt.filter { SchemaCachePolicy.isStale(loadedAt: $0.value, now: now) }.keys)
+        if !staleColumns.isEmpty { Task { await loadColumns(staleColumns, recordingMisses: false) } }
+    }
+
+    /// After DDL: reloads the object lists of the databases `sql` names and drops the cached columns of its tables.
+    func schemaDidChange(after sql: String, currentDatabase: String?) {
+        let change = SchemaChange(sql: sql, currentDatabase: currentDatabase)
+        if change.changesDatabaseList { Task { await reloadDatabases() } }
+        for database in Set(change.databases.compactMap(knownDatabase)) where databaseStates[database] != nil {
+            loadObjects(database: database, force: true)
+        }
+        for key in change.tables {
+            columnCache[key] = nil
+            columnsLoadedAt[key] = nil
+            columnMisses[key] = nil
+        }
+    }
+
+    /// Loads the columns of `keys`, one query per database. A table missing from the answer is remembered as missing
+    /// (`recordingMisses`) or dropped from the cache (a reload: it was dropped on the server).
+    private func loadColumns(_ keys: Set<TableKey>, recordingMisses: Bool) async {
+        for (database, group) in Dictionary(grouping: keys, by: \.database) {
             let tables = group.map(\.table)
             let loadKey = database + "\u{1F}" + tables.sorted().joined(separator: ",")
             if let running = columnLoads[loadKey] {
@@ -226,12 +298,21 @@ final class WorkspaceModel {
             let task = Task {
                 guard let columns = try? await client.columnsByTable(schema: database, tables: tables) else { return }
                 var found = Set<TableKey>()
+                let loadedAt = Date()
                 for (table, list) in columns {
                     let key = TableKey(database: database, table: table)
                     columnCache[key] = list
+                    columnsLoadedAt[key] = loadedAt
                     found.insert(key)
                 }
-                for key in group where !found.contains(key) { columnMisses[key] = Date() }
+                for key in group where !found.contains(key) {
+                    if recordingMisses {
+                        columnMisses[key] = loadedAt
+                    } else {
+                        columnCache[key] = nil
+                        columnsLoadedAt[key] = nil
+                    }
+                }
             }
             columnLoads[loadKey] = task
             await task.value
@@ -348,7 +429,10 @@ final class WorkspaceModel {
     private func sidebarContextHint() -> String? {
         if case let .object(model)? = selectedTab?.kind { return model.object.schema }
         if case let .sql(model)? = selectedTab?.kind { return model.database }
-        let preferred = profile.defaultDatabase.flatMap { name in databases.contains(name) ? name : nil }
+        let configured = profile.defaultDatabase?.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Before the database list has loaded, the tab's session uses the profile's default database: completion must too.
+        if schemas.isEmpty, let configured, !configured.isEmpty { return configured }
+        let preferred = configured.flatMap { name in databases.contains(name) ? name : nil }
         return preferred ?? expandedDatabases.sorted().first
     }
 

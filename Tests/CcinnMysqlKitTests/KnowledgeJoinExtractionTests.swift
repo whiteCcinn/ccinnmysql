@@ -54,21 +54,21 @@ struct KnowledgeInferenceJoinExtractorTests {
     }
 
     @Test func compositeConditionsBecomeOnePair() {
-        #expect(joins("SELECT * FROM report_adx_hour h JOIN report_adx_day d ON h.dt = d.dt AND d.app_id = h.app_id AND h.dt = d.dt")
-            == ["report_adx_hour(dt,app_id)=report_adx_day(dt,app_id)"])
+        #expect(joins("SELECT * FROM report_crm_hour h JOIN report_crm_day d ON h.dt = d.dt AND d.app_id = h.app_id AND h.dt = d.dt")
+            == ["report_crm_hour(dt,app_id)=report_crm_day(dt,app_id)"])
         #expect(joins("SELECT * FROM a JOIN b ON (a.x = b.y AND ((a.z) = (b.w)))") == ["a(x,z)=b(y,w)"])
         #expect(joins("SELECT * FROM a JOIN b ON a.x = b.x JOIN c ON a.y = c.y AND b.z = c.z") == ["a(x)=b(x)", "a(y)=c(y)", "b(z)=c(z)"])
     }
 
     @Test func aliasesAndQuotedNames() {
-        #expect(joins("SELECT * FROM `adx`.`report` AS `r` JOIN dsp AS d ON `r`.`dsp_id` = d.`id`") == ["adx.report(dsp_id)=dsp(id)"])
+        #expect(joins("SELECT * FROM `crm`.`report` AS `r` JOIN dsp AS d ON `r`.`dsp_id` = d.`id`") == ["crm.report(dsp_id)=dsp(id)"])
         #expect(joins("SELECT * FROM emp e JOIN emp m ON e.manager_id = m.id") == ["emp(manager_id)=emp(id)"], "self join")
     }
 
     @Test func databaseQualifiedNames() {
-        #expect(joins("SELECT * FROM adx.report r JOIN admin.dsp d ON r.dsp_id = d.id") == ["adx.report(dsp_id)=admin.dsp(id)"])
-        #expect(joins("SELECT * FROM adx.report JOIN admin.dsp ON adx.report.dsp_id = admin.dsp.id") == ["adx.report(dsp_id)=admin.dsp(id)"])
-        #expect(joins("SELECT * FROM adx.report JOIN admin.dsp ON report.dsp_id = dsp.id") == ["adx.report(dsp_id)=admin.dsp(id)"])
+        #expect(joins("SELECT * FROM crm.report r JOIN admin.dsp d ON r.dsp_id = d.id") == ["crm.report(dsp_id)=admin.dsp(id)"])
+        #expect(joins("SELECT * FROM crm.report JOIN admin.dsp ON crm.report.dsp_id = admin.dsp.id") == ["crm.report(dsp_id)=admin.dsp(id)"])
+        #expect(joins("SELECT * FROM crm.report JOIN admin.dsp ON report.dsp_id = dsp.id") == ["crm.report(dsp_id)=admin.dsp(id)"])
     }
 
     @Test func eachSubqueryResolvesItsOwnAliases() {
@@ -161,9 +161,9 @@ struct KnowledgeInferenceJoinExtractorTests {
 struct MySQLPrintedDefinitionTests {
     // information_schema.VIEWS prints every join in parentheses, with backquoted, database-qualified names.
     @Test func parenthesisedJoinTrees() {
-        let definition = "select `r`.`dt` AS `dt`,`d`.`name` AS `dsp_name` from (`kb_demo`.`report_adx_hour` `r` join `kb_demo`.`dsp` `d` "
+        let definition = "select `r`.`dt` AS `dt`,`d`.`name` AS `dsp_name` from (`kb_demo`.`report_crm_hour` `r` join `kb_demo`.`dsp` `d` "
             + "on((`r`.`dsp_id` = `d`.`id`))) group by `r`.`dt`,`d`.`name`"
-        #expect(joins(definition) == ["kb_demo.report_adx_hour(dsp_id)=kb_demo.dsp(id)"])
+        #expect(joins(definition) == ["kb_demo.report_crm_hour(dsp_id)=kb_demo.dsp(id)"])
         let nested = "select 1 AS `1` from ((`a` join `b` on((`a`.`x` = `b`.`y`))) join `c` on((`b`.`z` = `c`.`z`)))"
         #expect(joins(nested) == ["a(x)=b(y)", "b(z)=c(z)"])
     }

@@ -297,15 +297,15 @@ struct BackupContentPlanTests {
     }
 
     @Test func projectPathsExpandUnderTheNewHome() throws {
-        let index = F.index(projects: [F.project("p1", path: "~/code/adx")])
-        let plan = F.plan(knowledgeBundle([], index: index), local: F.localState(), existing: ["/Users/new/code/adx"])
+        let index = F.index(projects: [F.project("p1", path: "~/code/crm")])
+        let plan = F.plan(knowledgeBundle([], index: index), local: F.localState(), existing: ["/Users/new/code/crm"])
         let project = try #require(plan.knowledge?.projects.first)
-        #expect(project.expandedPath == "/Users/new/code/adx")
+        #expect(project.expandedPath == "/Users/new/code/crm")
         #expect(!project.isMissing && project.localMatch == nil)
     }
 
     @Test func aMissingPathIsMarkedAndKeepsItsLinks() throws {
-        let index = F.index(projects: [F.project("p1", path: "~/code/adx")])
+        let index = F.index(projects: [F.project("p1", path: "~/code/crm")])
         let plan = F.plan(knowledgeBundle([], index: index), local: F.localState())
         let project = try #require(plan.knowledge?.projects.first)
         #expect(project.isMissing)
@@ -314,17 +314,17 @@ struct BackupContentPlanTests {
     }
 
     @Test func aCommonPrefixRemapAppliesToEveryProject() throws {
-        let index = F.index(projects: [F.project("p1", path: "/Volumes/Work/code/adx"), F.project("p2", path: "/Volumes/Work/code/ssp"),
+        let index = F.index(projects: [F.project("p1", path: "/Volumes/Work/code/crm"), F.project("p2", path: "/Volumes/Work/code/ssp"),
                                        F.project("p3", path: "/opt/other")])
         var plan = F.plan(knowledgeBundle([], index: index), local: F.localState())
         #expect(plan.remapProjects(fromPrefix: "/Volumes/Work/co", toPrefix: "~/x", home: F.newHome, fileExists: { _ in true }) == 0,
                 "prefixes match whole path components")
-        let existing: Set<String> = ["/Users/new/code/adx", "/Users/new/code/ssp"]
+        let existing: Set<String> = ["/Users/new/code/crm", "/Users/new/code/ssp"]
         let remapped = plan.remapProjects(fromPrefix: "/Volumes/Work/code", toPrefix: "~/code", home: F.newHome,
                                           fileExists: { (path: String) -> Bool in existing.contains(path) })
         #expect(remapped == 2)
         let projects = try #require(plan.knowledge?.projects)
-        #expect(projects.map(\.path) == ["~/code/adx", "~/code/ssp", "/opt/other"])
+        #expect(projects.map(\.path) == ["~/code/crm", "~/code/ssp", "/opt/other"])
         #expect(projects.map(\.isMissing) == [false, false, true])
 
         let single = plan.remapProject("p3", to: "/Users/new/elsewhere", home: F.newHome, fileExists: { _ in true })
@@ -332,9 +332,9 @@ struct BackupContentPlanTests {
     }
 
     @Test func projectsMatchByPathOrGitRemote() throws {
-        let local = F.index(projects: [F.project("local-1", path: "~/work/adx", remote: "github.com/org/adx"),
+        let local = F.index(projects: [F.project("local-1", path: "~/work/crm", remote: "github.com/org/crm"),
                                        F.project("local-2", path: "~/code/ssp")])
-        let imported = F.index(projects: [F.project("p1", path: "~/code/adx-server", remote: "https://GitHub.com/org/adx.git"),
+        let imported = F.index(projects: [F.project("p1", path: "~/code/crm-server", remote: "https://GitHub.com/org/crm.git"),
                                           F.project("p2", path: "~/code/ssp")])
         let plan = F.plan(knowledgeBundle([], index: imported), local: F.localState(index: local))
         #expect(plan.knowledge?.projects.map(\.localMatch) == ["local-1", "local-2"])
@@ -397,7 +397,7 @@ struct BackupContentPlanTests {
         var profile = F.tunnelledProfile(name: "tunnel", keyPath: "~/.ssh/id")
         profile.updatedAt = F.date(3)
         let knowledge = F.knowledge(notes: [F.note("n1", text: "x", at: 1)], tables: [F.table("report")], refreshedAt: F.date(2))
-        let index = F.index(projects: [F.project("p1", path: "~/code/adx")])
+        let index = F.index(projects: [F.project("p1", path: "~/code/crm")])
         let entries = [F.historyEntry("SELECT 1", at: 1)]
         let settings: [String: BackupSettingValue] = ["autoLimit": .int(500)]
         let bundle = F.bundle(payload([profile], knowledge: BackupKnowledge(index: index, databases: [knowledge]), settings: settings,
@@ -425,10 +425,10 @@ struct BackupContentPlanTests {
 @Suite("Backup paths")
 struct BackupPathTests {
     @Test func homeIsCollapsedAndExpandedOnComponentBoundaries() {
-        #expect(BackupPaths.collapsingHome("/Users/old/code/adx", home: "/Users/old") == "~/code/adx")
+        #expect(BackupPaths.collapsingHome("/Users/old/code/crm", home: "/Users/old") == "~/code/crm")
         #expect(BackupPaths.collapsingHome("/Users/old", home: "/Users/old/") == "~")
         #expect(BackupPaths.collapsingHome("/Users/older/code", home: "/Users/old") == "/Users/older/code")
-        #expect(BackupPaths.expandingHome("~/code/adx", home: "/Users/new") == "/Users/new/code/adx")
+        #expect(BackupPaths.expandingHome("~/code/crm", home: "/Users/new") == "/Users/new/code/crm")
         #expect(BackupPaths.expandingHome("~", home: "/Users/new") == "/Users/new")
         #expect(BackupPaths.expandingHome("~bob/code", home: "/Users/new") == "~bob/code")
         #expect(BackupPaths.replacingPrefix("/Volumes/Work", with: "~/work", in: "/Volumes/Work/a", home: "/Users/new") == "~/work/a")
@@ -448,7 +448,7 @@ struct BackupMySQLRoutePlanTests {
     }
 
     @Test func anotherDefaultDatabaseIsTheSameAccount() throws {
-        let local = F.profile(name: "prod", host: "db.prod", database: "adx", updatedAt: F.date(10))
+        let local = F.profile(name: "prod", host: "db.prod", database: "crm", updatedAt: F.date(10))
         var other = local
         other.defaultDatabase = "billing"
         other.updatedAt = F.date(20)
@@ -617,7 +617,7 @@ struct BackupMySQLRoutePlanTests {
     }
 
     @Test func thePrivilegedOptInStaysWithTheAccount() throws {
-        var local = F.profile(name: "prod", host: "db.prod", database: "adx", updatedAt: F.date(10))
+        var local = F.profile(name: "prod", host: "db.prod", database: "crm", updatedAt: F.date(10))
         local.mcpAccess = .readOnly
         local.aiAllowsPrivilegedAccount = true
         var otherDatabase = local

@@ -168,22 +168,31 @@ extension MySQLClient {
         try await columnsByTable(schema: schema, tables: [table])[table] ?? []
     }
 
-    /// Columns keyed by table name, for the given tables (at most 200) or a whole schema.
+    /// Columns keyed by table name, for the given tables or a whole schema. Every table asked for is queried, in
+    /// batches of `columnQueryBatch`; a table missing from the result does not exist (or is not visible).
     public func columnsByTable(schema: String, tables: [String]? = nil) async throws -> [String: [ColumnInfo]] {
-        var sql = """
-            SELECT * FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = \(SQLText.literal(schema))
-            """
-        if let tables {
-            guard !tables.isEmpty else { return [:] }
-            sql += " AND TABLE_NAME IN (\(tables.prefix(200).map(SQLText.literal).joined(separator: ", ")))"
-        }
         var columns: [String: [ColumnInfo]] = [:]
-        for record in try await execute(sql).records {
-            guard let table = record.text("TABLE_NAME"), let column = Self.column(record) else { continue }
-            columns[table, default: []].append(column)
+        for sql in Self.columnQueries(schema: schema, tables: tables) {
+            for record in try await execute(sql).records {
+                guard let table = record.text("TABLE_NAME"), let column = Self.column(record) else { continue }
+                columns[table, default: []].append(column)
+            }
         }
         for key in columns.keys { columns[key]?.sort { $0.ordinal < $1.ordinal } }
         return columns
+    }
+
+    /// Tables per `IN` list in `columnsByTable`.
+    static let columnQueryBatch = 200
+
+    /// The `information_schema.COLUMNS` queries for `tables` (`nil`: the whole schema; empty: none).
+    static func columnQueries(schema: String, tables: [String]?) -> [String] {
+        let base = "SELECT * FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = \(SQLText.literal(schema))"
+        guard let tables else { return [base] }
+        return stride(from: 0, to: tables.count, by: columnQueryBatch).map { start in
+            let batch = tables[start..<min(start + columnQueryBatch, tables.count)]
+            return base + " AND TABLE_NAME IN (\(batch.map(SQLText.literal).joined(separator: ", ")))"
+        }
     }
 
     static func column(_ record: Record) -> ColumnInfo? {

@@ -7,7 +7,7 @@ private func temporaryStore() -> KnowledgeStore {
     KnowledgeStore(directory: FileManager.default.temporaryDirectory.appendingPathComponent("ccinn-kb-\(UUID().uuidString)", isDirectory: true))
 }
 
-private let key = DatabaseKey(cluster: ClusterKey(rawValue: "my://db.prod:3306"), catalog: "def", database: "adx")
+private let key = DatabaseKey(cluster: ClusterKey(rawValue: "my://db.prod:3306"), catalog: "def", database: "crm")
 
 @Suite("Knowledge identity")
 struct KnowledgeIdentityTests {
@@ -22,9 +22,9 @@ struct KnowledgeIdentityTests {
     }
 
     @Test func databaseFileIDsAreStableAndDistinct() {
-        #expect(key.fileID == DatabaseKey(cluster: ClusterKey(rawValue: "my://db.prod:3306"), catalog: "def", database: "adx").fileID)
+        #expect(key.fileID == DatabaseKey(cluster: ClusterKey(rawValue: "my://db.prod:3306"), catalog: "def", database: "crm").fileID)
         #expect(key.fileID.count == 21 && key.fileID.hasPrefix("d"))
-        #expect(key.fileID != DatabaseKey(cluster: key.cluster, catalog: "def", database: "ADX").fileID, "database names keep their case")
+        #expect(key.fileID != DatabaseKey(cluster: key.cluster, catalog: "def", database: "CRM").fileID, "database names keep their case")
     }
 
     @Test func columnsAreStoredCompactly() throws {
@@ -35,10 +35,10 @@ struct KnowledgeIdentityTests {
     }
 
     @Test func relationshipIDsIgnoreCaseAndSource() {
-        let lower = Relationship.id(from: .init(table: "report_adx_hour", columns: ["dsp_id"]), to: .init(table: "dsp", columns: ["id"]))
-        let upper = Relationship.id(from: .init(table: "REPORT_ADX_HOUR", columns: ["DSP_ID"]), to: .init(table: "Dsp", columns: ["ID"]))
+        let lower = Relationship.id(from: .init(table: "report_crm_hour", columns: ["dsp_id"]), to: .init(table: "dsp", columns: ["id"]))
+        let upper = Relationship.id(from: .init(table: "REPORT_CRM_HOUR", columns: ["DSP_ID"]), to: .init(table: "Dsp", columns: ["ID"]))
         #expect(lower == upper)
-        #expect(lower != Relationship.id(from: .init(table: "dsp", columns: ["id"]), to: .init(table: "report_adx_hour", columns: ["dsp_id"])))
+        #expect(lower != Relationship.id(from: .init(table: "dsp", columns: ["id"]), to: .init(table: "report_crm_hour", columns: ["dsp_id"])))
     }
 }
 

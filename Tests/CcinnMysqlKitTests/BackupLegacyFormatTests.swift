@@ -184,7 +184,7 @@ struct BackupLegacyProfileTests {
 
     @Test func aConvertedFileImportsAndASecondImportChangesNothing() throws {
         let profile = legacyProfile()
-        var base = L.KnowledgeBase(connectionID: profile.id, database: "adx")
+        var base = L.KnowledgeBase(connectionID: profile.id, database: "crm")
         base.notes.tables["report"] = L.TableNote(summary: "revenue in USD", author: "user", updatedAt: F.date(5))
         let data = try L.file(connections: [profile], secrets: [profile.id: allSecrets], passphrase: F.passphrase, knowledge: [base])
         let target = BackupTestMac(home: F.newHome)
@@ -200,7 +200,7 @@ struct BackupLegacyProfileTests {
         for kind in SecretKey.Kind.allCases {
             #expect(try target.secrets.secret(for: SecretKey(profileID: profile.id, kind: kind)) != nil, "\(kind.rawValue)")
         }
-        let key = DatabaseKey(cluster: ClusterKey(profile: profile), catalog: "def", database: "adx")
+        let key = DatabaseKey(cluster: ClusterKey(profile: profile), catalog: "def", database: "crm")
         #expect(try target.knowledge.database(key)?.notes.map(\.text) == ["revenue in USD"])
 
         let again = target.plan(try BackupFormat.decode(data, passphrase: F.passphrase), existing: existing)
@@ -214,7 +214,7 @@ struct BackupLegacyProfileTests {
 @Suite("Backup format 1 (CcinnMysql 1.5): knowledge")
 struct BackupLegacyKnowledgeTests {
     private let profile = legacyProfile()
-    private var key: DatabaseKey { DatabaseKey(cluster: ClusterKey(profile: profile), catalog: "def", database: "adx") }
+    private var key: DatabaseKey { DatabaseKey(cluster: ClusterKey(profile: profile), catalog: "def", database: "crm") }
 
     private func convert(_ bases: [L.KnowledgeBase], connections: [ConnectionProfile]? = nil) throws -> BackupBundle {
         try BackupFormat.decode(try L.file(connections: connections ?? [profile], knowledge: bases))
@@ -225,7 +225,7 @@ struct BackupLegacyKnowledgeTests {
     }
 
     @Test func notesBecomeDescriptionsWithTheirAuthors() throws {
-        var base = L.KnowledgeBase(connectionID: profile.id, database: "adx")
+        var base = L.KnowledgeBase(connectionID: profile.id, database: "crm")
         base.notes.tables["report"] = L.TableNote(summary: "  hourly revenue  ", author: "ai", updatedAt: F.date(5),
                                                    evidence: [L.Evidence(kind: "query", detail: "SELECT COUNT(*) …")])
         base.notes.columns["report"] = ["status": L.ColumnNote(note: "lifecycle", values: ["3": "paused", "1": "active"], author: "user",
@@ -246,7 +246,7 @@ struct BackupLegacyKnowledgeTests {
     }
 
     @Test func glossaryTermsKeepTheirSQLInTheDefinition() throws {
-        var base = L.KnowledgeBase(connectionID: profile.id, database: "adx")
+        var base = L.KnowledgeBase(connectionID: profile.id, database: "crm")
         base.notes.glossary["fill rate"] = L.GlossaryTerm(term: "Fill rate", definition: "Filled over requested.", tables: ["report", "bad\u{7}name"],
                                                           sql: "SELECT SUM(fill)/SUM(req) FROM report", author: "user", updatedAt: F.date(7))
         let term = try #require(try onlyDatabase(try convert([base])).terms.first)
@@ -257,12 +257,12 @@ struct BackupLegacyKnowledgeTests {
     }
 
     @Test func addedRelationshipsAndVerdictsCarryTheirEvidence() throws {
-        var base = L.KnowledgeBase(connectionID: profile.id, database: "adx")
-        base.projects = [L.LinkedProject(name: "adx-server", path: "/Users/old/code/adx")]
+        var base = L.KnowledgeBase(connectionID: profile.id, database: "crm")
+        base.projects = [L.LinkedProject(name: "crm-server", path: "/Users/old/code/crm")]
         let order = L.End(table: "orders", columns: ["user_id"])
         let user = L.End(table: "users", columns: ["id"])
         let added = L.Relationship(from: order, to: user, sources: ["ai"], confidence: 0.8, cardinality: "manyToOne",
-                                   evidence: [L.Evidence(kind: "code", project: "adx-server", path: "src/Orders.swift", line: 42, detail: "join"),
+                                   evidence: [L.Evidence(kind: "code", project: "crm-server", path: "src/Orders.swift", line: 42, detail: "join"),
                                               L.Evidence(kind: "query", detail: "no orphans")])
         base.notes.relationships[added.id] = L.AnnotatedRelationship(relationship: added, note: "orders belong to users", author: "ai",
                                                                      updatedAt: F.date(8))
@@ -293,7 +293,7 @@ struct BackupLegacyKnowledgeTests {
     }
 
     @Test func aVerdictOnARelationshipTheBackupDoesNotDescribeIsReported() throws {
-        var base = L.KnowledgeBase(connectionID: profile.id, database: "adx")
+        var base = L.KnowledgeBase(connectionID: profile.id, database: "crm")
         base.notes.verdicts["a(x)<->b(y)"] = L.Verdict(status: "rejected", reason: "no", author: "user", updatedAt: F.date(1))
         base.notes.tables["a"] = L.TableNote(summary: "kept", author: "user", updatedAt: F.date(1))
         let bundle = try convert([base])
@@ -305,17 +305,17 @@ struct BackupLegacyKnowledgeTests {
     }
 
     @Test func linkedFoldersBecomeProjectsLinkedToEachDatabase() throws {
-        var adx = L.KnowledgeBase(connectionID: profile.id, database: "adx")
-        adx.projects = [L.LinkedProject(name: "adx", path: "/Users/old/code/adx"), L.LinkedProject(name: "tools", path: "/opt/tools")]
+        var crm = L.KnowledgeBase(connectionID: profile.id, database: "crm")
+        crm.projects = [L.LinkedProject(name: "crm", path: "/Users/old/code/crm"), L.LinkedProject(name: "tools", path: "/opt/tools")]
         var ssp = L.KnowledgeBase(connectionID: profile.id, database: "ssp")
-        ssp.projects = [L.LinkedProject(name: "adx", path: "/Users/old/code/adx"), L.LinkedProject(name: "bad", path: "relative/path"),
+        ssp.projects = [L.LinkedProject(name: "crm", path: "/Users/old/code/crm"), L.LinkedProject(name: "bad", path: "relative/path"),
                         L.LinkedProject(name: "everything", path: "/"), L.LinkedProject(name: "home", path: "/Users/old")]
-        let bundle = try convert([adx, ssp])
+        let bundle = try convert([crm, ssp])
         let knowledge = try #require(bundle.payload.knowledge)
-        #expect(knowledge.index.projects.map(\.path) == ["~/code/adx", "/opt/tools"], "one project per folder, ~/… under the old home")
-        #expect(knowledge.index.projects.first?.id == KnowledgeMCP.projectID(path: "~/code/adx"), "the id linking the folder here would give it")
+        #expect(knowledge.index.projects.map(\.path) == ["~/code/crm", "/opt/tools"], "one project per folder, ~/… under the old home")
+        #expect(knowledge.index.projects.first?.id == KnowledgeMCP.projectID(path: "~/code/crm"), "the id linking the folder here would give it")
         #expect(knowledge.index.links.count == 3)
-        #expect(knowledge.index.databases.map(\.key.database) == ["adx", "ssp"], "listed for their links, though they hold no notes")
+        #expect(knowledge.index.databases.map(\.key.database) == ["crm", "ssp"], "listed for their links, though they hold no notes")
         #expect(knowledge.index.clusters.map(\.key) == [key.cluster])
         #expect(knowledge.databases.isEmpty, "nothing to write for databases without notes")
         let unusable = bundle.warnings.compactMap { (warning: BackupWarning) -> String? in
@@ -326,7 +326,7 @@ struct BackupLegacyKnowledgeTests {
     }
 
     @Test func factsUnknownConnectionsAndNewerFormatsAreReported() throws {
-        var facts = L.KnowledgeBase(connectionID: profile.id, database: "adx")
+        var facts = L.KnowledgeBase(connectionID: profile.id, database: "crm")
         facts.snapshot = L.Snapshot()
         facts.notes.tables["report"] = L.TableNote(summary: "kept", author: "user", updatedAt: F.date(1))
         let stranger = L.KnowledgeBase(connectionID: UUID(), database: "other")
@@ -348,9 +348,9 @@ struct BackupLegacyKnowledgeTests {
         var other = legacyProfile(name: "prod admin")
         other.id = UUID()
         other.username = "admin"
-        var first = L.KnowledgeBase(connectionID: profile.id, database: "adx")
+        var first = L.KnowledgeBase(connectionID: profile.id, database: "crm")
         first.notes.tables["report"] = L.TableNote(summary: "older", author: "user", updatedAt: F.date(1))
-        var second = L.KnowledgeBase(connectionID: other.id, database: "adx")
+        var second = L.KnowledgeBase(connectionID: other.id, database: "crm")
         second.notes.tables["report"] = L.TableNote(summary: "newer", author: "user", updatedAt: F.date(2))
         second.notes.tables["users"] = L.TableNote(summary: "people", author: "user", updatedAt: F.date(2))
         let database = try onlyDatabase(try convert([first, second], connections: [profile, other]))
@@ -358,7 +358,7 @@ struct BackupLegacyKnowledgeTests {
     }
 
     @Test func controlCharactersInFreeTextAreCleanedNotRefused() throws {
-        var base = L.KnowledgeBase(connectionID: profile.id, database: "adx")
+        var base = L.KnowledgeBase(connectionID: profile.id, database: "crm")
         base.notes.tables["report"] = L.TableNote(summary: "esc\u{1B}aped\nsecond line", author: "user", updatedAt: F.date(1))
         base.notes.tables["bad\u{7}table"] = L.TableNote(summary: "dropped", author: "user", updatedAt: F.date(1))
         let bundle = try convert([base])
@@ -385,23 +385,23 @@ struct LegacyKnowledgeConverterTests {
 
     @Test func aFileOnDiskConvertsWithItsFoldersUnderThisHome() throws {
         let profile = F.profile(name: "prod", host: "db.prod")
-        var stored = L.KnowledgeBase(connectionID: profile.id, database: "adx")
-        stored.projects = [L.LinkedProject(name: "adx", path: "/Users/me/code/adx")]
+        var stored = L.KnowledgeBase(connectionID: profile.id, database: "crm")
+        stored.projects = [L.LinkedProject(name: "crm", path: "/Users/me/code/crm")]
         stored.notes.tables["report"] = L.TableNote(summary: "revenue in USD", author: "user", updatedAt: F.date(1),
-                                                    evidence: [L.Evidence(kind: "code", project: "adx", path: "src/Report.swift", line: 7)])
+                                                    evidence: [L.Evidence(kind: "code", project: "crm", path: "src/Report.swift", line: 7)])
         stored.snapshot = L.Snapshot()
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let url = directory.appendingPathComponent("adx.json")
+        let url = directory.appendingPathComponent("crm.json")
         try file(stored).write(to: url)
 
         let base = try LegacyKnowledgeConverter.read(contentsOf: url)
-        #expect(base.connectionID == profile.id && base.database == "adx" && !base.isNewerFormat)
+        #expect(base.connectionID == profile.id && base.database == "crm" && !base.isNewerFormat)
         let converted = LegacyKnowledgeConverter.convert(base, profile: profile, home: "/Users/me")
-        let key = DatabaseKey(cluster: ClusterKey(profile: profile), catalog: "def", database: "adx")
+        let key = DatabaseKey(cluster: ClusterKey(profile: profile), catalog: "def", database: "crm")
         #expect(converted.knowledge.key == key)
         #expect(converted.knowledge.notes.map(\.text) == ["revenue in USD"])
-        #expect(converted.projects.map(\.path) == ["~/code/adx"])
+        #expect(converted.projects.map(\.path) == ["~/code/crm"])
         #expect(converted.links.map(\.database) == [key.fileID] && converted.links.map(\.project) == converted.projects.map(\.id))
         let code = try #require(converted.knowledge.notes.first?.evidence.first)
         #expect(code.source == .code && code.project == converted.projects.first?.id && code.path == "src/Report.swift" && code.line == 7)
@@ -417,7 +417,7 @@ struct LegacyKnowledgeConverterTests {
 
     @Test func aNewerOrDamagedFileIsReportedNotGuessed() throws {
         let profile = F.profile(name: "prod", host: "db.prod")
-        var newer = L.KnowledgeBase(connectionID: profile.id, database: "adx")
+        var newer = L.KnowledgeBase(connectionID: profile.id, database: "crm")
         newer.formatVersion = 2
         let base = try LegacyKnowledgeConverter.decode(try file(newer))
         #expect(base.isNewerFormat)

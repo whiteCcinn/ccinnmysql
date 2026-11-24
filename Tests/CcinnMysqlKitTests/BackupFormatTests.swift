@@ -14,7 +14,7 @@ private func samplePayload() -> (BackupPayload, ConnectionProfile) {
                                             kind: .manyToOne, evidence: [Evidence(source: .naming, score: 55, at: F.date(1))])]
     let payload = BackupPayload(
         profiles: [profile],
-        knowledge: BackupKnowledge(index: F.index(projects: [F.project("p1", path: "~/code/adx", remote: "github.com/org/adx")]),
+        knowledge: BackupKnowledge(index: F.index(projects: [F.project("p1", path: "~/code/crm", remote: "github.com/org/crm")]),
                                    databases: [knowledge]),
         settings: ["appearance": .string("Dark"), "autoLimit": .int(5000), "updates.automaticallyCheck": .bool(false)],
         history: [BackupHistory(profile: profile.id, entries: [F.historyEntry("SELECT 1", at: 3)])])
@@ -298,9 +298,9 @@ struct BackupFormatTests {
         #expect(throws: BackupError.self) { try BackupFormat.decode(port) }
         let option = try F.replacingPayload(of: data) { $0.replacingOccurrences(of: "\"db.prod\"", with: "\"-oProxyCommand=evil\"") }
         #expect(throws: BackupError.self) { try BackupFormat.decode(option) }
-        let relative = try F.replacingPayload(of: data) { $0.replacingOccurrences(of: "~/code/adx", with: "code/adx") }
+        let relative = try F.replacingPayload(of: data) { $0.replacingOccurrences(of: "~/code/crm", with: "code/crm") }
         #expect(throws: BackupError.self) { try BackupFormat.decode(relative) }
-        let traversal = try F.replacingPayload(of: data) { $0.replacingOccurrences(of: "~/code/adx", with: "~/code/../../etc") }
+        let traversal = try F.replacingPayload(of: data) { $0.replacingOccurrences(of: "~/code/crm", with: "~/code/../../etc") }
         #expect(throws: BackupError.self) { try BackupFormat.decode(traversal) }
         let relativeCA = try F.replacingPayload(of: data) { $0.replacingOccurrences(of: "~/certs/ca.pem", with: "certs/ca.pem") }
         #expect(throws: BackupError.self) { try BackupFormat.decode(relativeCA) }
@@ -317,9 +317,9 @@ struct BackupFormatTests {
             #expect(throws: BackupError.self, "\(path)") { try BackupFormat.decode(control) }
         }
         let longDatabase = try F.replacingPayload(of: data) { text in
-            text.replacingOccurrences(of: "\"defaultDatabase\":\"adx\",\"host\"", with: "\"defaultDatabase\":\"\(String(repeating: "d", count: 2_000))\",\"host\"")
+            text.replacingOccurrences(of: "\"defaultDatabase\":\"crm\",\"host\"", with: "\"defaultDatabase\":\"\(String(repeating: "d", count: 2_000))\",\"host\"")
         }
-        #expect(data.contains("\"defaultDatabase\":\"adx\",\"host\""), "the replacement above has something to replace")
+        #expect(data.contains("\"defaultDatabase\":\"crm\",\"host\""), "the replacement above has something to replace")
         #expect(throws: BackupError.self) { try BackupFormat.decode(longDatabase) }
         let duplicate = try F.replacingPayload(of: data) { text in
             guard let start = text.range(of: "\"profiles\":[")?.upperBound, let end = text.range(of: "}],\"settings\"")?.lowerBound else { return text }

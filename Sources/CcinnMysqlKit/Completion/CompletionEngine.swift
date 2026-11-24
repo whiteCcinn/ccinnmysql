@@ -1,51 +1,6 @@
 import Foundation
 import MySQLKit
 
-public struct CompletionItem: Sendable, Hashable, Identifiable {
-    public enum Kind: Int, Sendable, Hashable {
-        case column, alias, table, view, routine, database, function, keyword
-    }
-
-    public let kind: Kind
-    public let label: String
-    public let insertText: String
-    /// Secondary text: column type and table, function signature, object kind.
-    public let detail: String?
-
-    public var id: String { "\(kind.rawValue)\u{1F}\(label)\u{1F}\(detail ?? "")" }
-}
-
-public struct CompletionResult: Sendable {
-    /// UTF-16 range in the editor text that the chosen item replaces.
-    public let replacementRange: Range<Int>
-    public let prefix: String
-    public let items: [CompletionItem]
-    /// Tables referenced by the statement whose columns are not in the snapshot yet; the app loads
-    /// them and asks again.
-    public let missingColumns: [TableKey]
-    /// Databases whose object lists are needed but not loaded yet.
-    public let missingDatabases: [String]
-    /// The cursor is where a table, routine or database name must follow (`FROM `, `JOIN `, `CALL `, `USE `, …), so
-    /// the editor may offer the list before anything is typed.
-    public let expectsObjectName: Bool
-
-    public init(replacementRange: Range<Int>, prefix: String, items: [CompletionItem], missingColumns: [TableKey] = [],
-                missingDatabases: [String] = [], expectsObjectName: Bool = false) {
-        self.replacementRange = replacementRange
-        self.prefix = prefix
-        self.items = items
-        self.missingColumns = missingColumns
-        self.missingDatabases = missingDatabases
-        self.expectsObjectName = expectsObjectName
-    }
-
-    public var needsMoreSchema: Bool { !missingColumns.isEmpty || !missingDatabases.isEmpty }
-
-    public static func empty(at cursor: Int) -> CompletionResult {
-        CompletionResult(replacementRange: cursor..<cursor, prefix: "", items: [])
-    }
-}
-
 /// Context-aware SQL completion (design D6). Pure and synchronous; callers run it off the main actor.
 public enum CompletionEngine {
     public static let defaultLimit = 200
@@ -57,15 +12,28 @@ public enum CompletionEngine {
         case routineName
         case afterTableReference
         case database
+        /// After a statement-leading `EXPLAIN`/`DESC`/`DESCRIBE`: a table, or the statement to explain.
+        case explainTarget
+        /// A name that does not exist yet (`RENAME TABLE a TO |`): only a database may qualify it.
+        case newName
         case expression
 
         /// Only a table, routine or database name can follow, so the list is worth offering before anything is typed.
         var expectsObjectName: Bool {
             switch self {
-            case .tableName, .routineName, .database: true
-            case .statementStart, .showTarget, .afterTableReference, .expression: false
+            case .tableName, .routineName, .database, .explainTarget: true
+            case .statementStart, .showTarget, .afterTableReference, .newName, .expression: false
             }
         }
+    }
+
+    /// The name being completed: the token at the cursor, or an empty name at the cursor.
+    struct NameAtCursor {
+        var replacementRange: Range<Int>
+        var prefix: String
+        var isQuoted: Bool
+        /// All digits (`2024`): a name only where a name must follow, a number elsewhere.
+        var isNumber: Bool
     }
 
     /// A table reference in scope: a base table (database + name) or a derived table/CTE with known columns.
@@ -98,22 +66,19 @@ public enum CompletionEngine {
             }
             if ending.kind == .string, !isTerminated(ending, lexer: lexer) { return .empty(at: cursor) }
         }
+        guard let name = nameAtCursor(tokens: tokens, cursor: cursor, lexer: lexer) else { return .empty(at: cursor) }
 
-        let prefixToken = tokens.last {
-            $0.range.upperBound == cursor && ($0.kind == .identifier || $0.kind == .keyword || $0.kind == .quotedIdentifier)
-        }
-        let replacementStart = prefixToken?.range.lowerBound ?? cursor
-        let prefix: String = prefixToken.map { token in
-            token.kind == .quotedIdentifier ? lexer.identifierValue(of: token) : lexer.text(of: token)
-        } ?? ""
+        let replacementStart = name.replacementRange.lowerBound
         let before = tokens.filter { $0.range.upperBound <= replacementStart && $0.kind != .comment }
         let significant = tokens.filter { $0.kind != .comment }
-        let scope = scopeTables(tokens: significant, lexer: lexer, schema: schema)
+        let ctes = commonTableExpressions(tokens: significant, lexer: lexer)
+        let scope = scopeTables(tokens: significant, lexer: lexer, schema: schema, ctes: ctes)
 
         var candidates: [CompletionItem]
         var missing: [TableKey] = []
         var missingDatabases: [String] = []
         var expectsObjectName = false
+        var allowsNumericName = true
         if let last = before.last, isDot(last, lexer) {
             let qualifier = qualifierChain(before: before, lexer: lexer)
             (candidates, missing) = memberCandidates(qualifier: qualifier, scope: scope, schema: schema)
@@ -122,15 +87,46 @@ public enum CompletionEngine {
             }
         } else {
             let context = clauseContext(before: before, lexer: lexer)
-            (candidates, missing) = contextCandidates(context, scope: scope, schema: schema)
-            if case .tableName = context, let current = schema.currentDatabase, schema.objects(in: current) == nil {
+            if name.isNumber, !context.expectsObjectName { return .empty(at: cursor) }
+            (candidates, missing) = contextCandidates(context, scope: scope, ctes: ctes, schema: schema)
+            if context == .tableName || context == .explainTarget, let current = schema.currentDatabase, schema.objects(in: current) == nil {
                 missingDatabases.append(current)
             }
             expectsObjectName = context.expectsObjectName
+            allowsNumericName = context.expectsObjectName
         }
-        let ranked = rank(candidates, prefix: prefix, limit: limit)
-        return CompletionResult(replacementRange: replacementStart..<cursor, prefix: prefix, items: ranked,
-                                missingColumns: missing, missingDatabases: missingDatabases, expectsObjectName: expectsObjectName)
+        let pool = CompletionPool(candidates)
+        return CompletionResult(replacementRange: name.replacementRange, prefix: name.prefix,
+                                items: CompletionRanking.rank(pool, prefix: name.prefix, limit: limit, quoted: name.isQuoted),
+                                missingColumns: missing, missingDatabases: missingDatabases, expectsObjectName: expectsObjectName,
+                                isQuoted: name.isQuoted, allowsNumericName: allowsNumericName, pool: pool)
+    }
+
+    /// The name token the cursor is in or just after (whole token replaced, the part before the cursor matched), an
+    /// empty name at the cursor when there is none, `nil` where no name can be typed (`1.5|`, `@var|`).
+    static func nameAtCursor(tokens: [SQLToken], cursor: Int, lexer: SQLLexer) -> NameAtCursor? {
+        guard let token = tokens.last(where: { $0.range.lowerBound < cursor && cursor <= $0.range.upperBound && $0.kind != .comment })
+        else { return NameAtCursor(replacementRange: cursor..<cursor, prefix: "", isQuoted: false, isNumber: false) }
+        let start = token.range.lowerBound
+        switch token.kind {
+        case .identifier, .keyword:
+            return NameAtCursor(replacementRange: token.range, prefix: lexer.text(in: start..<cursor), isQuoted: false, isNumber: false)
+        case .quotedIdentifier:
+            let raw = lexer.text(in: (start + 1)..<cursor)
+            let quote = lexer.units[start]
+            // Right after the closing back-quote, the prefix is the whole (unescaped) name.
+            let prefix = cursor == token.range.upperBound && isTerminated(token, lexer: lexer) && cursor - start >= 2
+                ? lexer.identifierValue(of: token)
+                : raw.replacingOccurrences(of: String(repeating: String(decoding: [quote], as: UTF16.self), count: 2),
+                                           with: String(decoding: [quote], as: UTF16.self))
+            return NameAtCursor(replacementRange: token.range, prefix: prefix, isQuoted: true, isNumber: false)
+        case .number where lexer.units[token.range].allSatisfy(SQLLexer.isDigit):
+            return NameAtCursor(replacementRange: token.range, prefix: lexer.text(in: start..<cursor), isQuoted: false, isNumber: true)
+        case .number, .variable:
+            return nil
+        case .punctuation, .operator, .string, .comment, .executableComment:
+            return NameAtCursor(replacementRange: cursor..<cursor, prefix: "", isQuoted: false, isNumber: false)
+        }
     }
 
     // MARK: Scope analysis
@@ -164,30 +160,56 @@ public enum CompletionEngine {
         "LATERAL", "WINDOW", "OUTER", "INNER", "PARTITION", "LIMIT", "WHERE", "ON", "USING", "FORCE", "IGNORE", "STRAIGHT_JOIN",
     ])
 
-    /// Tables, derived tables and CTEs referenced anywhere in the statement, with their aliases.
-    static func scopeTables(tokens: [SQLToken], lexer: SQLLexer, schema: SchemaSnapshot) -> [ScopeTable] {
-        var result: [ScopeTable] = []
-        var ctes: [String: [String]] = [:]
-        let words = tokens.map { $0.kind == .keyword ? lexer.text(of: $0).uppercased() : "" }
+    /// `FROM` inside these calls is part of the call (`EXTRACT(YEAR FROM d)`, `TRIM(x FROM s)`), not a table list.
+    static let callsWithFrom: Set<String> = ["EXTRACT", "TRIM", "SUBSTRING", "SUBSTR", "POSITION", "OVERLAY"]
 
-        // CTEs: WITH name AS ( … ), name AS ( … )
-        if words.first == "WITH" {
-            var index = 1
-            if index < words.count, words[index] == "RECURSIVE" { index += 1 }
-            while index + 2 < tokens.count, isName(tokens[index]), words[index + 1] == "AS",
-                  lexer.text(of: tokens[index + 2]) == "(" {
-                let name = lexer.identifierValue(of: tokens[index])
-                let close = matchingParen(tokens: tokens, open: index + 2, lexer: lexer)
-                ctes[name.lowercased()] = derivedColumns(tokens: Array(tokens[(index + 3)..<close]), lexer: lexer)
-                index = close + 1
-                if index < tokens.count, lexer.text(of: tokens[index]) == "," { index += 1 } else { break }
+    /// `WITH [RECURSIVE] name AS ( … ), name AS ( … )` at the start of the statement: names and output columns, in order.
+    static func commonTableExpressions(tokens: [SQLToken], lexer: SQLLexer) -> [(name: String, columns: [String])] {
+        let words = tokens.map { $0.kind == .keyword ? lexer.text(of: $0).uppercased() : "" }
+        guard words.first == "WITH" else { return [] }
+        var result: [(name: String, columns: [String])] = []
+        var index = 1
+        if index < words.count, words[index] == "RECURSIVE" { index += 1 }
+        while index + 2 < tokens.count, isName(tokens[index]), words[index + 1] == "AS", lexer.text(of: tokens[index + 2]) == "(" {
+            let close = matchingParen(tokens: tokens, open: index + 2, lexer: lexer)
+            result.append((lexer.identifierValue(of: tokens[index]),
+                           derivedColumns(tokens: Array(tokens[(index + 3)..<min(close, tokens.count)]), lexer: lexer)))
+            index = close + 1
+            if index < tokens.count, lexer.text(of: tokens[index]) == "," { index += 1 } else { break }
+        }
+        return result
+    }
+
+    /// For every token, the call it is an argument of (`EXTRACT` for `FROM` in `EXTRACT(YEAR FROM d)`), if any.
+    static func enclosingCalls(tokens: [SQLToken], lexer: SQLLexer) -> [String?] {
+        var result = [String?](repeating: nil, count: tokens.count)
+        var open: [String?] = []
+        for index in tokens.indices {
+            let token = tokens[index]
+            if token.kind == .punctuation, lexer.text(of: token) == ")" { _ = open.popLast() }
+            result[index] = open.last ?? nil
+            if token.kind == .punctuation, lexer.text(of: token) == "(" {
+                let callee = index > 0 && isName(tokens[index - 1]) ? lexer.text(of: tokens[index - 1]).uppercased() : nil
+                open.append(callee)
             }
         }
+        return result
+    }
+
+    /// Tables, derived tables and CTEs referenced anywhere in the statement, with their aliases.
+    static func scopeTables(tokens: [SQLToken], lexer: SQLLexer, schema: SchemaSnapshot,
+                            ctes: [(name: String, columns: [String])]? = nil) -> [ScopeTable] {
+        var result: [ScopeTable] = []
+        let words = tokens.map { $0.kind == .keyword ? lexer.text(of: $0).uppercased() : "" }
+        let cteColumns = Dictionary((ctes ?? commonTableExpressions(tokens: tokens, lexer: lexer)).map { ($0.name.lowercased(), $0.columns) },
+                                    uniquingKeysWith: { first, _ in first })
+        let calls = enclosingCalls(tokens: tokens, lexer: lexer)
 
         var index = 0
         while index < tokens.count {
             let word = words[index]
-            let startsReference = ["FROM", "JOIN", "UPDATE", "INTO", "TABLE"].contains(word)
+            let startsReference = ["FROM", "JOIN", "STRAIGHT_JOIN", "UPDATE", "INTO", "TABLE"].contains(word)
+                && !(word == "FROM" && calls[index].map(callsWithFrom.contains) == true)
             index += 1
             guard startsReference else { continue }
             var parsingList = true
@@ -212,7 +234,7 @@ public enum CompletionEngine {
                     let table = parts[parts.count - 1]
                     let database = parts.count >= 2 ? parts[parts.count - 2] : nil
                     var reference = ScopeTable(alias: nil, database: database, table: table, derivedColumns: nil)
-                    if database == nil, let cteColumns = ctes[table.lowercased()] { reference.derivedColumns = cteColumns }
+                    if database == nil, let columns = cteColumns[table.lowercased()] { reference.derivedColumns = columns }
                     if let (alias, next) = parseAlias(tokens: tokens, words: words, at: index, lexer: lexer) {
                         reference.alias = alias
                         index = next
@@ -294,6 +316,7 @@ public enum CompletionEngine {
         if lastText == "SHOW" { return .showTarget }
         if lastText == "USE" { return .database }
         if lastText == "CALL" { return .routineName }
+        if before.count == 1, ["EXPLAIN", "DESC", "DESCRIBE"].contains(firstWord) { return .explainTarget }
 
         // Walk back within the current parenthesis level to the nearest clause keyword.
         var depth = 0
@@ -312,6 +335,7 @@ public enum CompletionEngine {
             }
             guard depth == 0 else { continue }
             let word = words[index]
+            let previous = index > 0 ? words[index - 1] : ""
             switch word {
             case "DESC" where index > 0, "DESCRIBE" where index > 0:
                 break // `ORDER BY x DESC`: a sort direction; only a statement-leading DESC describes a table.
@@ -319,9 +343,18 @@ public enum CompletionEngine {
                 let lowered = words.joined(separator: " ")
                 return lowered.contains("TABLES") || lowered.contains("EVENTS") || lowered.contains("TRIGGERS") || lowered.contains("STATUS")
                     ? .database : .tableName
-            case "FROM", "JOIN", "UPDATE", "INTO", "TABLE", "DESC", "DESCRIBE", "TRUNCATE":
+            case "FROM" where callsWithFrom.contains(enclosingCall(before: before, at: index, lexer: lexer) ?? ""):
+                return .expression // `EXTRACT(YEAR FROM |`
+            case "FROM", "JOIN", "STRAIGHT_JOIN", "UPDATE", "INTO", "TABLE", "DESC", "DESCRIBE", "EXPLAIN", "TRUNCATE":
                 if distance == 0 || sawComma { return .tableName }
                 return word == "UPDATE" || word == "INTO" || word == "TABLE" ? .expression : .afterTableReference
+            case "TABLES" where previous == "LOCK" || previous == "FLUSH":
+                // `LOCK TABLES a READ, |`
+                return distance == 0 || sawComma ? .tableName : .expression
+            case "TO" where firstWord == "RENAME" && distance == 0:
+                return .newName // `RENAME TABLE a TO |`; after `a TO b, ` the walk reaches TABLE.
+            case "ON" where namesTableAfterOn(firstWord: firstWord, words: words, tokens: before, at: index):
+                return distance == 0 ? .tableName : .expression // `CREATE INDEX i ON |`, `GRANT SELECT ON |`
             case "SELECT", "WHERE", "ON", "HAVING", "BY", "SET", "AND", "OR", "NOT", "WHEN", "THEN", "ELSE", "CASE",
                  "DISTINCT", "IN", "LIKE", "BETWEEN", "IS", "USING", "OVER", "PARTITION", "VALUES":
                 return .expression
@@ -334,6 +367,46 @@ public enum CompletionEngine {
             if token.kind != .punctuation || text != "." { distance += 1 }
         }
         return .expression
+    }
+
+    /// `ON` at `words[index]` names a table in the header of `CREATE/DROP INDEX name [USING BTREE|HASH] ON`,
+    /// `CREATE TRIGGER name BEFORE|AFTER INSERT|UPDATE|DELETE ON`, and in `GRANT`/`REVOKE`. Elsewhere (a join, a
+    /// foreign key's `ON DELETE`, a trigger body) it does not.
+    static func namesTableAfterOn(firstWord: String, words: [String], tokens: [SQLToken], at index: Int) -> Bool {
+        switch firstWord {
+        case "GRANT", "REVOKE":
+            return true
+        case "CREATE", "DROP":
+            var position = index - 1
+            if position >= 1, words[position] == "BTREE" || words[position] == "HASH", words[position - 1] == "USING" { position -= 2 }
+            if position >= 1, isName(tokens[position]), words[position - 1] == "INDEX" { return true }
+            return firstWord == "CREATE" && index >= 2 && ["INSERT", "UPDATE", "DELETE"].contains(words[index - 1])
+                && ["BEFORE", "AFTER"].contains(words[index - 2])
+        default:
+            return false
+        }
+    }
+
+    /// The call whose parentheses enclose `before[index]` (upper-cased), if they belong to a call.
+    static func enclosingCall(before: [SQLToken], at index: Int, lexer: SQLLexer) -> String? {
+        var depth = 0
+        var position = index - 1
+        while position >= 0 {
+            let token = before[position]
+            if token.kind == .punctuation {
+                let text = lexer.text(of: token)
+                if text == ")" { depth += 1 }
+                if text == "(" {
+                    if depth == 0 {
+                        guard position > 0, isName(before[position - 1]) else { return nil }
+                        return lexer.text(of: before[position - 1]).uppercased()
+                    }
+                    depth -= 1
+                }
+            }
+            position -= 1
+        }
+        return nil
     }
 
     // MARK: Candidates
@@ -365,20 +438,26 @@ public enum CompletionEngine {
         }
     }
 
-    static func contextCandidates(_ context: Context, scope: [ScopeTable], schema: SchemaSnapshot) -> ([CompletionItem], [TableKey]) {
+    /// What may follow a statement-leading `EXPLAIN`/`DESC`/`DESCRIBE` besides a table.
+    static let explainableStatements = ["SELECT", "WITH", "INSERT INTO", "REPLACE INTO", "UPDATE", "DELETE FROM", "TABLE", "ANALYZE",
+                                        "FORMAT=TREE", "FORMAT=JSON", "FORMAT=TRADITIONAL"]
+
+    static func contextCandidates(_ context: Context, scope: [ScopeTable], ctes: [(name: String, columns: [String])] = [],
+                                  schema: SchemaSnapshot) -> ([CompletionItem], [TableKey]) {
         switch context {
         case .statementStart:
             return (SQLKeywords.statementStarters.map(keywordItem), [])
         case .showTarget:
             return (SQLKeywords.showTargets.map(keywordItem), [])
-        case .database:
+        case .database, .newName:
             return (databaseCandidates(schema), [])
-        case .tableName:
-            var items: [CompletionItem] = []
+        case .tableName, .explainTarget:
+            var items = ctes.map { CompletionItem(kind: .table, label: $0.name, insertText: quoteIfNeeded($0.name), detail: "CTE") }
             if let current = schema.currentDatabase {
                 items += objectCandidates(database: current, schema: schema, routines: false)
             }
             items += databaseCandidates(schema)
+            if context == .explainTarget { items += explainableStatements.map(keywordItem) }
             return (items, [])
         case .routineName:
             var items: [CompletionItem] = []
@@ -460,41 +539,5 @@ public enum CompletionEngine {
         }
         if simple, !SQLKeywords.reserved.contains(name.uppercased()) { return name }
         return SQLText.quoteIdentifier(name)
-    }
-
-    // MARK: Ranking
-
-    /// Prefix matches first, then word-boundary matches (`cd` → `city_daily`), then subsequences.
-    static func rank(_ items: [CompletionItem], prefix: String, limit: Int) -> [CompletionItem] {
-        let needle = prefix.lowercased()
-        var scored: [(item: CompletionItem, score: Int)] = []
-        scored.reserveCapacity(items.count)
-        var seen = Set<String>()
-        for item in items where seen.insert(item.id).inserted {
-            let score = matchScore(label: item.label.lowercased(), needle: needle)
-            if score > 0 { scored.append((item, score)) }
-        }
-        scored.sort { lhs, rhs in
-            if lhs.score != rhs.score { return lhs.score > rhs.score }
-            if lhs.item.kind != rhs.item.kind { return lhs.item.kind.rawValue < rhs.item.kind.rawValue }
-            return lhs.item.label.localizedStandardCompare(rhs.item.label) == .orderedAscending
-        }
-        return scored.prefix(max(0, limit)).map(\.item)
-    }
-
-    static func matchScore(label: String, needle: String) -> Int {
-        if needle.isEmpty { return 1 }
-        if label == needle { return 5 }
-        if label.hasPrefix(needle) { return 4 }
-        let words = label.split(whereSeparator: { $0 == "_" || $0 == " " || $0 == "." })
-        if words.dropFirst().contains(where: { $0.hasPrefix(needle) }) { return 3 }
-        let initials = String(words.compactMap(\.first))
-        if initials.hasPrefix(needle) { return 2 }
-        var remaining = Substring(needle)
-        for character in label where character == remaining.first {
-            remaining = remaining.dropFirst()
-            if remaining.isEmpty { return 1 }
-        }
-        return 0
     }
 }

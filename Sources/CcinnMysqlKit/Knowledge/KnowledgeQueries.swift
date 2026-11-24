@@ -40,8 +40,8 @@ enum KnowledgeRules {
         }
     }
 
-    /// Lower-cased words of a name or question: `reportAdxHour`, `report_adx_hour` and `report adx hour` all give
-    /// report / adx / hour. CJK runs stay whole.
+    /// Lower-cased words of a name or question: `reportCrmHour`, `report_crm_hour` and `report crm hour` all give
+    /// report / crm / hour. CJK runs stay whole.
     static func tokens(_ text: String) -> [String] {
         var tokens: [String] = []
         var current = ""
