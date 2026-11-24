@@ -4,14 +4,15 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.7.0] - 2026-11-24
 
 ### Added
 
-- **The Data tab pages through the whole table and sorts on the server.** 1.6 showed the first 200 rows and sorted only those: sorting `id` descending showed the largest id among the first 200. Now:
+- **The Data tab pages through the whole table, filters it and sorts on the server.** 1.6 showed the first 200 rows and sorted only those: sorting `id` descending showed the largest id among the first 200. Now:
   - a click on a column header asks the server: ascending, then descending, then the table's own order;
   - first, previous and next page of 200 rows, with the position (`Rows 201–400 of ≈ 2.8M`, the exact count on the last page) and row numbers that continue across pages;
   - pages are read by key where the server compares the sort exactly as it orders it (`WHERE (sort, key) > (last row)`), so page 5,000 costs what page 1 does; nullable, floating-point, binary, ENUM/SET, TEXT and TIMESTAMP sorts, and tables without a key, read by offset, with the other columns breaking ties;
+  - a `WHERE` filter above the rows (`channel = 'web' AND amount > 100`, Return to apply) narrows every page, in any sort. It is sent as typed, so it is checked first: one condition, balanced parentheses, nothing left unterminated, and no `;`, `ORDER BY`, `LIMIT`, `UNION`, `INTO` or other clause that would reshape the query (a subquery may use them). A refused or failing filter leaves the page on screen and says why;
   - the page on screen stays while the next one loads; Reload, cell edits and Open in Editor act on it. An edit confirmed after another page arrived is refused rather than applied to the row now in its place.
 
 ## [1.6.1] - 2026-11-24

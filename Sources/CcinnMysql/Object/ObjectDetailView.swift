@@ -564,6 +564,8 @@ private struct DataSection: View {
         .padding(.vertical, 5)
         .background(model.dataFilter == nil ? Color.clear : Theme.accent.opacity(0.06))
         .onAppear { filterText = model.dataFilter?.condition ?? filterText }
+        // A filter took effect: show it as applied (without a typed WHERE).
+        .onChange(of: model.dataFilter) { _, applied in filterText = applied?.condition ?? "" }
     }
 
     private var pageButtons: some View {

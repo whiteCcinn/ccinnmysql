@@ -183,6 +183,28 @@ struct ConnectingView: View {
 enum LaunchArguments {
     private static var consumed = false
 
+    /// Screenshots and checks of the Data tab: `--data-sort column[:desc]`, `--data-filter "condition"`, `--data-page n`.
+    static func driveDataTab(_ model: ObjectDetailModel, value: (String) -> String?) async {
+        func settle() async {
+            try? await Task.sleep(for: .milliseconds(150))
+            for _ in 0..<150 where model.isLoadingPage || model.preview.value == nil { try? await Task.sleep(for: .milliseconds(100)) }
+        }
+        await settle()
+        if let raw = value("--data-sort") {
+            let parts = raw.split(separator: ":", maxSplits: 1).map(String.init)
+            model.sortPreview(by: TablePager.Sort(column: parts[0], ascending: parts.count < 2 || parts[1].lowercased() != "desc"))
+            await settle()
+        }
+        if let filter = value("--data-filter") {
+            model.applyFilter(filter)
+            await settle()
+        }
+        for _ in 1..<max(1, value("--data-page").flatMap(Int.init) ?? 1) {
+            model.nextPage()
+            await settle()
+        }
+    }
+
     static func value(_ flag: String) -> String? {
         let arguments = ProcessInfo.processInfo.arguments
         guard let index = arguments.firstIndex(of: flag), arguments.indices.contains(index + 1) else { return nil }
@@ -228,6 +250,9 @@ enum LaunchArguments {
                             ObjectDetailModel.Section.allCases.first { $0.rawValue.lowercased().hasPrefix(raw.lowercased()) }
                         }
                         workspace.openObject(object, section: section)
+                        if section == .data, case let .object(model)? = workspace.selectedTab?.kind {
+                            await Self.driveDataTab(model, value: value)
+                        }
                     }
                 }
                 if let sql = value("--sql") {
